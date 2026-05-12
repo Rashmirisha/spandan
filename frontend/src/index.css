@@ -4,8 +4,7 @@
 
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  background: linear-gradient(135deg, #1e3c72 0%, #2a5298 50%, #1e3c72 100%);
-  min-height: 100vh;
+  margin: 0;
 }
 
 /* Custom scrollbar */
