@@ -8,12 +8,15 @@ const fs = require('fs');
 const envPath = path.join(__dirname, 'frontend', '.env');
 if (fs.existsSync(envPath)) {
   const envContent = fs.readFileSync(envPath, 'utf8');
-  envContent.split('\n').forEach(line => {
-    const [key, ...valueParts] = line.split('=');
-    if (key && valueParts.length > 0) {
-      process.env[key.trim()] = valueParts.join('=').trim();
+  const lines = envContent.split('\n');
+  for (const line of lines) {
+    const eqIdx = line.indexOf('=');
+    if (eqIdx > 0) {
+      const key = line.substring(0, eqIdx).trim();
+      const val = line.substring(eqIdx + 1).trim();
+      if (key) process.env[key] = val;
     }
-  });
+  }
 }
 
 const BASE_PATH = process.env.VITE_BASE_PATH || '/spandan';
