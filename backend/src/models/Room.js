@@ -24,6 +24,15 @@ const roomSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // NEW: Wall-clock timestamp when the teacher started recording / the
+  // session clock began. The teacher app sends this once via socket
+  // `teacher:session-start` (or it's set on first broadcast). All doubt
+  // signals anchor their `recordingOffsetMs` against this. Null = no
+  // session clock yet (recording hasn't started).
+  roomStartedAt: {
+    type: Date,
+    default: null
+  },
   // Per-room HMAC salt for anonymizing doubt-signal studentHashes.
   // Generated lazily on first doubt signal; rotated when the room ends.
   doubtSalt: {

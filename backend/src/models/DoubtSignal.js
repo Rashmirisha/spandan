@@ -41,6 +41,31 @@ const doubtSignalSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // NEW: Wall-clock timestamp when the client sent the signal.
+  // Server may use this if it needs to derive recordingOffsetMs
+  // (more accurate than relying on the client's guess).
+  clientSentAt: {
+    type: Date,
+    default: Date.now
+  },
+  // NEW: Teacher's recording clock at the moment of the signal,
+  // in milliseconds from roomStartedAt. This is what the teacher UI
+  // displays as "lost at 02:34" — wall-clock time relative to recording start.
+  // Stored explicitly because the teacher's latest position may shift
+  // before the signal arrives at the server.
+  recordingOffsetMs: {
+    type: Number,
+    default: null,
+    min: 0
+  },
+  // NEW: Snapshot of the teacher's most-recently broadcast transcript text
+  // at the moment of the signal. Stored on the signal itself so the spike
+  // can render context even if the teacher's transcript has since advanced.
+  // Empty string if no transcript was available.
+  utteranceSnapshot: {
+    type: String,
+    default: ''
+  },
   // Client-supplied context (optional): device type, etc. — kept generic to
   // avoid leaking identity info.
   client: {
@@ -67,6 +92,28 @@ doubtSignalSchema.statics.countDistinctStudentsBySegment = async function (roomI
     { $group: { _id: '$segmentIndex', uniqueStudents: { $addToSet: '$studentHash' } } },
     { $project: { segmentIndex: '$_id', count: { $size: '$uniqueStudents' }, _id: 0 } },
     { $sort: { segmentIndex: 1 } }
+  ])
+}
+
+// NEW: count distinct students per recordingOffsetMs bucket.
+// Useful for the teacher UI to show "students lost at recording time 02:34"
+// without needing to know the segment index. Buckets are 1-second windows.
+doubtSignalSchema.statics.countDistinctStudentsByRecordingTime = async function (roomId, bucketMs = 1000) {
+  return this.aggregate([
+    { $match: { roomId: new mongoose.Types.ObjectId(String(roomId)), retracted: false, recordingOffsetMs: { $ne: null } } },
+    {
+      $project: {
+        bucket: {
+          $multiply: [
+            { $floor: { $divide: ['$recordingOffsetMs', bucketMs] } },
+            bucketMs
+          ]
+        }
+      }
+    },
+    { $group: { _id: '$bucket', uniqueStudents: { $addToSet: '$studentHash' } } },
+    { $project: { recordingOffsetMs: '$_id', count: { $size: '$uniqueStudents' }, _id: 0 } },
+    { $sort: { recordingOffsetMs: 1 } }
   ])
 }
 

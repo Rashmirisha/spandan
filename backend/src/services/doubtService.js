@@ -28,11 +28,11 @@ const ANTI_SPAM_MS = 30 * 1000 // one signal per student per 30s, regardless of 
  * Record a doubt signal. Returns { ok, signal, reason } — reason is set when
  * the call was deliberately ignored (anti-spam or already-retracted-then-readded).
  */
-export async function recordDoubt ({ roomId, userId, segmentIndex, transcriptOffsetMs, client }) {
+export async function recordDoubt ({ roomId, userId, segmentIndex, transcriptOffsetMs, client, recordingOffsetMs, utteranceSnapshot, clientSentAt }) {
   if (!mongoose.Types.ObjectId.isValid(String(roomId))) {
     return { ok: false, reason: 'invalid_room_id' }
   }
-  const room = await Room.findById(roomId).select('_id isActive doubtSalt')
+  const room = await Room.findById(roomId).select('_id isActive doubtSalt roomStartedAt')
   if (!room) return { ok: false, reason: 'room_not_found' }
   if (!room.isActive) return { ok: false, reason: 'room_ended' }
 
@@ -48,15 +48,70 @@ export async function recordDoubt ({ roomId, userId, segmentIndex, transcriptOff
   }).sort({ createdAt: -1 })
   if (recent) return { ok: false, reason: 'anti_spam', retryAfterMs: ANTI_SPAM_MS }
 
+  // Compute recordingOffsetMs server-side if client didn't provide one
+  // (more authoritative -- uses server clock + roomStartedAt).
+  let computedRecordingOffsetMs = null
+  if (typeof recordingOffsetMs === 'number' && recordingOffsetMs >= 0) {
+    computedRecordingOffsetMs = recordingOffsetMs
+  } else if (room.roomStartedAt) {
+    const sentAt = clientSentAt ? new Date(clientSentAt) : new Date()
+    // Clamp to non-negative (clock skew could go slightly negative)
+    computedRecordingOffsetMs = Math.max(0, sentAt.getTime() - room.roomStartedAt.getTime())
+  }
+
   const signal = await DoubtSignal.create({
     roomId,
     studentHash,
     segmentIndex: Math.max(0, parseInt(segmentIndex, 10) || 0),
     transcriptOffsetMs: Math.max(0, parseInt(transcriptOffsetMs, 10) || 0),
+    clientSentAt: clientSentAt ? new Date(clientSentAt) : new Date(),
+    recordingOffsetMs: computedRecordingOffsetMs,
+    utteranceSnapshot: typeof utteranceSnapshot === 'string' ? utteranceSnapshot.slice(0, 500) : '',
     client: { type: client || 'web' }
   })
 
   return { ok: true, signal }
+}
+
+/**
+ * Mark a room's recording clock origin. Called when the teacher starts the
+ * recording / session. All subsequent doubt signals anchor their
+ * `recordingOffsetMs` against this.
+ */
+export async function startRoomSession (roomId, teacherId) {
+  if (!mongoose.Types.ObjectId.isValid(String(roomId))) {
+    return { ok: false, reason: 'invalid_room_id' }
+  }
+  const room = await Room.findById(roomId)
+  if (!room) return { ok: false, reason: 'room_not_found' }
+  // Only the room's teacher can start the session
+  if (String(room.teacher) !== String(teacherId)) {
+    return { ok: false, reason: 'not_teacher' }
+  }
+  room.roomStartedAt = new Date()
+  await room.save()
+  return { ok: true, roomStartedAt: room.roomStartedAt }
+}
+
+/**
+ * Get a room's current recording clock + most-recent teacher position
+ * (for late-joining students who need to sync up).
+ */
+export async function getRoomSession (roomId) {
+  if (!mongoose.Types.ObjectId.isValid(String(roomId))) {
+    return { ok: false, reason: 'invalid_room_id' }
+  }
+  const room = await Room.findById(roomId).select('_id isActive roomStartedAt').lean()
+  if (!room) return { ok: false, reason: 'room_not_found' }
+  return {
+    ok: true,
+    roomStartedAt: room.roomStartedAt,
+    isActive: room.isActive,
+    // Server-side current recording offset, useful if student just joined
+    currentRecordingOffsetMs: room.roomStartedAt
+      ? Math.max(0, Date.now() - new Date(room.roomStartedAt).getTime())
+      : null
+  }
 }
 
 /**
@@ -118,12 +173,72 @@ export async function detectSpikes ({ roomId, minMarkCount = 3, spikeStdDevMulti
 
   const spikes = counts
     .filter(c => c.count >= minMarkCount || c.count >= spikeThreshold)
-    .map(c => ({
-      segmentIndex: c.segmentIndex,
-      count: c.count,
-      transcriptSnippet: (transcriptBySeg.get(c.segmentIndex) || '').slice(0, 200)
-    }))
+    .map(c => {
+      const segSnippet = (transcriptBySeg.get(c.segmentIndex) || '').slice(0, 200)
+      return {
+        segmentIndex: c.segmentIndex,
+        count: c.count,
+        transcriptSnippet: segSnippet,
+        hasTranscript: !!transcriptBySeg.get(c.segmentIndex)
+      }
+    })
     .sort((a, b) => b.count - a.count)
 
   return { spikes, allSegments: counts, stats: { mean, stddev, threshold: spikeThreshold } }
+}
+
+/**
+ * NEW: Get per-spike details with recording timestamps + utterance snapshots.
+ * This is the data the teacher UI really wants. Goes signal-by-signal to
+ * show *when* each signal arrived and *what the teacher said* at that moment.
+ */
+export async function getSpikeDetails ({ roomId, bucketMs = 5000, minMarkCount = 3 }) {
+  const bucketCounts = await DoubtSignal.countDistinctStudentsByRecordingTime(roomId, bucketMs)
+  const spikes = bucketCounts
+    .filter(b => b.count >= minMarkCount)
+    .map(b => ({
+      recordingOffsetMs: b.recordingOffsetMs,
+      recordingOffsetLabel: formatMs(b.recordingOffsetMs),
+      count: b.count
+    }))
+    .sort((a, b) => b.count - a.count)
+  return { spikes, bucketMs }
+}
+
+/**
+ * NEW: Get all signals for a room, time-anchored, so the teacher can replay
+ * "where was each student when they tapped?". Returns:
+ *   [{ recordingOffsetMs, recordingOffsetLabel, utteranceSnapshot,
+ *      studentHashShort (first 8 chars for display), clientSentAt, retracted }]
+ */
+export async function getSignalsForRoom (roomId, opts = {}) {
+  const limit = Math.min(opts.limit || 200, 1000)
+  const signals = await DoubtSignal.find({ roomId })
+    .sort({ recordingOffsetMs: 1, createdAt: 1 })
+    .limit(limit)
+    .lean()
+  return signals.map(s => ({
+    _id: s._id,
+    segmentIndex: s.segmentIndex,
+    transcriptOffsetMs: s.transcriptOffsetMs,
+    recordingOffsetMs: s.recordingOffsetMs,
+    recordingOffsetLabel: formatMs(s.recordingOffsetMs || 0),
+    utteranceSnapshot: s.utteranceSnapshot || '',
+    studentHashShort: (s.studentHash || '').slice(0, 8),
+    clientSentAt: s.clientSentAt || s.createdAt,
+    retracted: !!s.retracted
+  }))
+}
+
+/**
+ * Format milliseconds as MM:SS or HH:MM:SS for UI display.
+ */
+function formatMs (ms) {
+  if (ms == null || isNaN(ms)) return '—'
+  const totalSec = Math.floor(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }

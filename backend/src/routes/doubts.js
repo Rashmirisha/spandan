@@ -5,7 +5,11 @@ import {
   recordDoubt,
   retractLatestDoubt,
   getDoubtCountsBySegment,
-  detectSpikes
+  detectSpikes,
+  startRoomSession,
+  getRoomSession,
+  getSpikeDetails,
+  getSignalsForRoom
 } from '../services/doubtService.js'
 
 const router = express.Router()
@@ -38,6 +42,9 @@ router.post('/', authenticate, async (req, res) => {
       userId: req.user._id,
       segmentIndex: segmentIndex || 0,
       transcriptOffsetMs: transcriptOffsetMs || 0,
+      recordingOffsetMs: typeof req.body.recordingOffsetMs === 'number' ? req.body.recordingOffsetMs : null,
+      utteranceSnapshot: req.body.utteranceSnapshot || '',
+      clientSentAt: req.body.clientSentAt || null,
       client: req.headers['user-agent']?.includes('Mobile') ? 'mobile' : 'web'
     })
 
@@ -61,6 +68,9 @@ router.post('/', authenticate, async (req, res) => {
         roomId: String(roomId),
         segmentIndex: segmentIndex || 0,
         count: segCount,
+        recordingOffsetMs: result.signal.recordingOffsetMs,
+        recordingOffsetLabel: result.signal.recordingOffsetLabel,
+        utteranceSnapshot: result.signal.utteranceSnapshot || '',
         timestamp: Date.now()
       })
     }
@@ -152,6 +162,108 @@ router.get('/room/:roomId/question/:questionId', authenticate, async (req, res) 
   } catch (err) {
     console.error('[doubts] question-doubt error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch question doubt count' })
+  }
+})
+
+// ============================================================================
+// NEW: Session clock endpoints (for accurate "what time?" in doubt signals)
+// ============================================================================
+
+/**
+ * POST /api/doubts/room/:roomId/session/start
+ * Teacher marks the start of the recording session. All subsequent doubt
+ * signals anchor their recordingOffsetMs against this. Idempotent -- resets
+ * the clock only if the room has no prior start.
+ */
+router.post('/room/:roomId/session/start', authenticate, async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const room = await Room.findById(roomId).select('_id teacher')
+    if (!room) return res.status(404).json({ success: false, error: 'Room not found' })
+    if (String(room.teacher) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only the room teacher can start the session' })
+    }
+    const result = await startRoomSession(roomId, req.user._id)
+    if (!result.ok) return res.status(400).json({ success: false, error: result.reason })
+    // Notify everyone in the room so students can sync their clocks
+    const io = req.app.get('io')
+    if (io && room.code) {
+      io.to(room.code).emit('teacher:session-start', {
+        roomId: String(roomId),
+        roomStartedAt: result.roomStartedAt,
+        timestamp: Date.now()
+      })
+    }
+    res.json({ success: true, roomStartedAt: result.roomStartedAt })
+  } catch (err) {
+    console.error('[doubts] session/start error:', err)
+    res.status(500).json({ success: false, error: 'Failed to start session' })
+  }
+})
+
+/**
+ * GET /api/doubts/room/:roomId/session
+ * Get the current session clock + current recording offset. For late-joining
+ * students who need to sync up without waiting for the next broadcast.
+ */
+router.get('/room/:roomId/session', authenticate, async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const result = await getRoomSession(roomId)
+    if (!result.ok) return res.status(404).json({ success: false, error: result.reason })
+    res.json({ success: true, ...result })
+  } catch (err) {
+    console.error('[doubts] session/get error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch session' })
+  }
+})
+
+// ============================================================================
+// NEW: Time-anchored spike + signal endpoints (for accurate "what time?" UI)
+// ============================================================================
+
+/**
+ * GET /api/doubts/room/:roomId/spikes/timeline
+ * Returns confusion spikes anchored to recording time (not just segment index).
+ * Each spike has a `recordingOffsetLabel` (e.g. "02:34") and `count`.
+ * Useful for the teacher to scan "at what moments did the class get lost?"
+ */
+router.get('/room/:roomId/spikes/timeline', authenticate, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const room = await Room.findById(roomId).select('_id teacher')
+    if (!room) return res.status(404).json({ success: false, error: 'Room not found' })
+    if (String(room.teacher) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Only the room teacher can view doubt signals' })
+    }
+    const bucketMs = Math.max(1000, parseInt(req.query.bucketMs, 10) || 5000)
+    const minMarkCount = parseInt(req.query.minMarkCount, 10) || 3
+    const spikes = await getSpikeDetails({ roomId, bucketMs, minMarkCount })
+    res.json({ success: true, ...spikes })
+  } catch (err) {
+    console.error('[doubts] timeline-spike error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch timeline spikes' })
+  }
+})
+
+/**
+ * GET /api/doubts/room/:roomId/signals
+ * Returns every signal for the room with time-anchored metadata so the teacher
+ * can see "what each student said when they tapped".
+ */
+router.get('/room/:roomId/signals', authenticate, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const room = await Room.findById(roomId).select('_id teacher')
+    if (!room) return res.status(404).json({ success: false, error: 'Room not found' })
+    if (String(room.teacher) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Only the room teacher can view doubt signals' })
+    }
+    const signals = await getSignalsForRoom(roomId, { limit: parseInt(req.query.limit, 10) || 200 })
+    res.json({ success: true, signals })
+  } catch (err) {
+    console.error('[doubts] signals-list error:', err)
+    res.status(500).json({ success: false, error: 'Failed to fetch signals' })
   }
 })
 
