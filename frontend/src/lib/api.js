@@ -84,3 +84,14 @@ export const questionApi = {
 }
 
 export default api
+// Contextual Doubt-Anchored Polling API
+export const doubtApi = {
+  record: (roomId, segmentIndex, transcriptOffsetMs) =>
+    api.post('/doubts', { roomId, segmentIndex, transcriptOffsetMs }),
+  retract: (roomId) => api.post('/doubts/retract', { roomId }),
+  getForRoom: (roomId) => api.get(`/doubts/room/${roomId}`),
+  getSpikes: (roomId, minMarkCount) =>
+    api.get(`/doubts/room/${roomId}/spikes${minMarkCount ? `?minMarkCount=${minMarkCount}` : ''}`),
+  getForQuestion: (roomId, questionId) =>
+    api.get(`/doubts/room/${roomId}/question/${questionId}`)
+}

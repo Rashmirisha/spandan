@@ -12,6 +12,7 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
+import ConfusionSpikePanel from '../components/ConfusionSpikePanel'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -1032,7 +1033,7 @@ function RoomDetailPage() {
               cursor: 'pointer',
               fontSize: '18px'
             }}>
-              ←
+              📋
             </button>
 
             <div style={{
@@ -1093,7 +1094,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  ⏱️ Answer
+                  â±ï¸ Answer
                 </span>
                 <span style={{
                   fontSize: '20px',
@@ -1121,7 +1122,7 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  ⏱️ Time's Up!
+                  â±ï¸ Time's Up!
                 </span>
               </div>
             )}
@@ -1144,7 +1145,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                📝 Paste & Generate
+                📋 Paste & Generate
               </button>
             )}
 
@@ -1166,7 +1167,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ✍️ Create Q
+                ⚙ Create Q
               </button>
             )}
 
@@ -1188,7 +1189,7 @@ function RoomDetailPage() {
                   gap: '6px'
                 }}
               >
-                ⚙️ Settings
+                ⚙ Settings
               </button>
 
               <RoomSettingsModal
@@ -1372,7 +1373,7 @@ function RoomDetailPage() {
                 borderBottom: '1px solid var(--border-color)'
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '18px' }}>🎙️</span>
+                  <span style={{ fontSize: '18px' }}>🎯</span>
                   <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     Current Segment Transcription
                   </span>
@@ -1414,7 +1415,7 @@ function RoomDetailPage() {
                       gap: '4px'
                     }}
                   >
-                    {isGeneratingQuestions ? '⏳ Generating...' : '🔄 Generate Q'}
+                    {isGeneratingQuestions ? '⏳ Generating...' : '⚙ Generate Q'}
                   </button>
                 </div>
               </div>
@@ -1442,7 +1443,7 @@ function RoomDetailPage() {
             {/* Session Questions - flexible width */}
             <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ fontSize: '20px' }}>📝</span>
+              <span style={{ fontSize: '20px' }}>📋</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Session Questions
               </span>
@@ -1584,7 +1585,7 @@ function RoomDetailPage() {
             {/* Leaderboard - flexible width */}
             <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                <span style={{ fontSize: '20px' }}>🏆</span>
+                <span style={{ fontSize: '20px' }}>📋</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                   Leaderboard
                 </span>
@@ -1594,6 +1595,14 @@ function RoomDetailPage() {
           </div>
         </div>
       </div>
+
+
+      {/* Contextual Doubt-Anchored Polling: live confusion signals for the teacher */}
+      {room?._id && (
+        <div style={{ padding: '0 32px 24px', maxWidth: '420px', marginLeft: 'auto' }}>
+          <ConfusionSpikePanel roomId={room._id} roomCode={room.code} />
+        </div>
+      )}
 
       {/* Question Approval Popup */}
       {showQuestionPopup && pendingQuestions.length > 0 && (
@@ -1687,7 +1696,7 @@ function RoomDetailPage() {
               fontSize: '48px',
               marginBottom: '16px',
               animation: 'spin 1s linear infinite'
-            }}>⏳</div>
+            }}>â³</div>
             <h3 style={{
               margin: '0 0 8px',
               color: 'var(--text-primary)',

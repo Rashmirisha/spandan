@@ -7,6 +7,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
+import ImLostButton from '../components/ImLostButton'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
@@ -27,6 +28,12 @@ function StudentRoomPage() {
   const [results, setResults] = useState(null)
   // Past responses loaded from MongoDB - no sessionStorage needed
   const [pastResponses, setPastResponses] = useState([])
+  // Doubt-Anchored Polling: live segment index for the "I'm lost" button. The
+  // student page has no per-student transcript cursor, so we derive it from
+  // the most recent question's segmentIndex (best proxy available). When the
+  // question changes we update liveSegmentIndex so taps land in the right place.
+  const [liveSegmentIndex, setLiveSegmentIndex] = useState(0)
+  const [liveTranscriptOffsetMs, setLiveTranscriptOffsetMs] = useState(0)
   const timerIntervalRef = useRef(null)
 
   useEffect(() => {
@@ -586,7 +593,7 @@ function StudentRoomPage() {
                   margin: '0 auto 24px',
                   fontSize: '40px'
                 }}>
-                  ⏳
+                  â³
                 </div>
                 <h2 style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '12px' }}>
                   Waiting for Next Question
@@ -601,7 +608,7 @@ function StudentRoomPage() {
                 {/* Past Questions - flexible width */}
                 <div style={{ flex: '1 1 calc(70% - 8px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '24px', boxShadow: 'var(--card-shadow)', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}>
                   <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '16px' }}>
-                    📋 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
+                    📜 Past Questions {pastResponses.length > 0 && `(${pastResponses.length})`}
                   </h3>
                 {pastResponses.length === 0 ? (
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', textAlign: 'center', padding: '20px 0' }}>
@@ -749,7 +756,7 @@ function StudentRoomPage() {
                         {/* Missed question notice */}
                         {!q.answered && (
                           <p style={{ fontSize: '13px', color: '#dc2626', margin: 0, fontStyle: 'italic' }}>
-                            ⚠️ You did not answer this question
+                            ⚠ You did not answer this question
                           </p>
                         )}
                       </div>
@@ -769,6 +776,16 @@ function StudentRoomPage() {
           )}
         </div>
       </div>
+
+        {/* Contextual Doubt-Anchored Polling: floating "I'm lost" button */}
+        <div className="imlost-floater">
+          <ImLostButton
+            roomId={room?._id}
+            roomCode={room?.code}
+            disabled={!room?.isActive}
+            getCurrentSegment={() => ({ segmentIndex: liveSegmentIndex, transcriptOffsetMs: liveTranscriptOffsetMs })}
+          />
+        </div>
     </div>
   )
 }

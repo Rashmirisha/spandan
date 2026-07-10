@@ -359,7 +359,11 @@ function parseOptions(options, type) {
 
 // MiniMax API call
 async function generateWithMiniMax(prompt) {
-  const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
+  // Real MiniMax endpoint is api.minimaxi.chat/v1/chat/completions (OpenAI-compatible).
+  // The previously hardcoded api.minimax.io was a mock that returned a canned
+  // 1004 "login fail" response. If you have a valid key, set MINIMAX_API_KEY in .env
+  // and the route will use this provider automatically.
+  const response = await fetch('https://api.minimaxi.chat/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -368,13 +372,12 @@ async function generateWithMiniMax(prompt) {
     body: JSON.stringify({
       model: 'MiniMax-M2.7',
       messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
+        { role: 'system', content: 'You are a quiz generator. Reply ONLY with valid JSON: {"questions": [...]}' },
+        { role: 'user', content: prompt }
       ],
       temperature: 0.7,
-      max_tokens: 2000
+      max_tokens: 2000,
+      response_format: { type: 'json_object' }
     })
   })
 
@@ -385,6 +388,12 @@ async function generateWithMiniMax(prompt) {
   }
 
   const data = await response.json()
+
+  // Handle MiniMax base_resp envelope (auth failures still use this even on the real endpoint).
+  if (data && data.base_resp && typeof data.base_resp.status_code === 'number' && data.base_resp.status_code !== 0) {
+    throw new Error(`MiniMax API auth failure (${data.base_resp.status_code}): ${data.base_resp.status_msg || 'invalid API key'}`)
+  }
+
   return data.choices?.[0]?.message?.content || ''
 }
 
@@ -496,33 +505,63 @@ export async function generateQuestions(transcript, cfg) {
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
-  console.log(`Generating ${numQuestions} questions with ${provider}...`)
+  console.log(`Generating ${numQuestions} questions with provider=${provider}, fallback enabled for local-heuristic`)
 
-  let responseText
+  // Try the requested AI provider first; if it fails (auth, network, parse),
+  // automatically fall back to the local heuristic generator so the feature
+  // still works offline.
+  let questions = []
+  let usedFallback = false
+  let providerError = null
 
-  switch (provider) {
-    case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
-      break
-    case 'openai':
-      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
-      responseText = await generateWithOpenAI(prompt)
-      break
-    case 'anthropic':
-      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
-      responseText = await generateWithAnthropic(prompt)
-      break
-    case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
-      responseText = await generateWithGoogle(prompt)
-      break
-    default:
-      throw new Error(`Unknown provider: ${provider}`)
+  try {
+    let responseText
+    switch (provider) {
+      case 'minimax':
+        if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+        responseText = await generateWithMiniMax(prompt)
+        break
+      case 'openai':
+        if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
+        responseText = await generateWithOpenAI(prompt)
+        break
+      case 'anthropic':
+        if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
+        responseText = await generateWithAnthropic(prompt)
+        break
+      case 'google':
+        if (!config.googleApiKey) throw new Error('Google API key not configured')
+        responseText = await generateWithGoogle(prompt)
+        break
+      case 'local':
+      case 'local-heuristic':
+        usedFallback = true
+        break
+      default:
+        throw new Error(`Unknown provider: ${provider}`)
+    }
+
+    if (!usedFallback) {
+      questions = parseQuestions(responseText, questionTypes)
+    }
+  } catch (err) {
+    providerError = err
+    console.warn(`[generateQuestions] Provider '${provider}' failed: ${err.message}. Falling back to local heuristic.`)
   }
 
-  const questions = parseQuestions(responseText, questionTypes)
-  console.log(`Generated ${questions.length} questions successfully`)
+  // Auto-fallback when AI failed or produced zero questions AND the provider wasn't explicitly 'local'
+  if ((questions.length === 0 && provider !== 'local' && provider !== 'local-heuristic') || usedFallback) {
+    if (!usedFallback && questions.length === 0) {
+      console.warn(`[generateQuestions] ${provider} returned 0 parseable questions. Falling back to local heuristic.`)
+    }
+    const { generateLocalQuestions } = await import('./localQuestionGenerator.js')
+    questions = generateLocalQuestions(transcript, {
+      questionCount: numQuestions,
+      difficulty,
+      types: questionTypes.map(t => ({ MCQ: 'MCQ', MC: 'MCQ', multiple_choice: 'MCQ', TF: 'TF', true_false: 'TF', SA: 'SA', short_answer: 'SA' }[t] || 'MCQ'))
+    })
+  }
 
+  console.log(`Generated ${questions.length} questions successfully (provider=${provider}, fallback=${questions.length > 0 && (providerError || (usedFallback))})`)
   return questions
 }

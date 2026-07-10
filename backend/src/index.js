@@ -15,6 +15,7 @@ import questionRoutes from './routes/questions.js'
 import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
+import doubtRoutes from './routes/doubts.js'
 
 // Import models for reference
 import './models/index.js'
@@ -116,6 +117,7 @@ app.use('/api/questions', questionRoutes)
 app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
+app.use('/api/doubts', doubtRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -288,6 +290,38 @@ io.on('connection', (socket) => {
   // Leaderboard update
   socket.on('leaderboard:update', (data) => {
     io.to(data.roomCode).emit('leaderboard:updated', data)
+  })
+
+  // Contextual Doubt-Anchored Polling: real-time student signal
+  socket.on('doubt:signal', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { recordDoubt, getDoubtCountsBySegment } = await import('./services/doubtService.js')
+      const result = await recordDoubt({
+        roomId: data.roomId,
+        userId,
+        segmentIndex: data.segmentIndex || 0,
+        transcriptOffsetMs: data.transcriptOffsetMs || 0,
+        client: 'socket'
+      })
+      if (!result.ok) {
+        socket.emit('doubt:ignored', { reason: result.reason, retryAfterMs: result.retryAfterMs })
+        return
+      }
+      const counts = await getDoubtCountsBySegment(data.roomId)
+      const segCount = counts.find(c => c.segmentIndex === (data.segmentIndex || 0))?.count || 1
+      io.to(data.roomCode).emit('doubt:new', {
+        roomId: String(data.roomId),
+        segmentIndex: data.segmentIndex || 0,
+        count: segCount,
+        timestamp: Date.now()
+      })
+      socket.emit('doubt:confirmed', { segmentIndex: data.segmentIndex || 0 })
+    } catch (err) {
+      console.error('[socket] doubt:signal error:', err.message)
+    }
   })
 
   socket.on('disconnect', () => {
