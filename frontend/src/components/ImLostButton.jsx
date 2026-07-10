@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { doubtApi } from '../lib/api.js'
 import { useSocketStore } from '../stores/socketStore.js'
+import { useTeacherPositionStore } from '../stores/teacherPositionStore.js'
 import sounds from '../lib/sounds.js'
 
 /**
@@ -21,6 +22,8 @@ export default function ImLostButton ({ roomId, roomCode, getCurrentSegment, dis
   const [cooldownMs, setCooldownMs] = useState(0)
   const cooldownRef = useRef(null)
   const socket = useSocketStore(s => s.socket)
+  const teacherPos = useTeacherPositionStore(s => s.lastPosition)
+  const sessionActive = useTeacherPositionStore(s => s.sessionActive)
 
   const startCooldown = useCallback((ms) => {
     setCooldownMs(ms)
@@ -73,6 +76,15 @@ export default function ImLostButton ({ roomId, roomCode, getCurrentSegment, dis
     if (status === 'sending' || cooldownMs > 0 || disabled) return
     sounds.tap()
     const pos = (typeof getCurrentSegment === 'function' ? getCurrentSegment() : null) || { segmentIndex: 0, transcriptOffsetMs: 0 }
+    // NEW: live teacher position broadcast — students see real recordingOffsetMs
+    // and the utterance the teacher was saying when they tapped.
+    const livePos = sessionActive && teacherPos
+      ? {
+          recordingOffsetMs: teacherPos.recordingOffsetMs,
+          utteranceSnapshot: teacherPos.utteranceSnapshot || '',
+          clientSentAt: Date.now()
+        }
+      : null
     setStatus('sending')
 
     try {
@@ -81,13 +93,21 @@ export default function ImLostButton ({ roomId, roomCode, getCurrentSegment, dis
           roomId: String(roomId),
           roomCode,
           segmentIndex: pos.segmentIndex,
-          transcriptOffsetMs: pos.transcriptOffsetMs
+          transcriptOffsetMs: pos.transcriptOffsetMs,
+          ...(livePos || {})
         })
         // Optimistic; the 'doubt:confirmed' handler will adjust if needed.
         setStatus('confirmed')
         setTimeout(() => setStatus(prev => prev === 'confirmed' ? 'idle' : prev), 1500)
       } else {
-        const res = await doubtApi.record(roomId, pos.segmentIndex, pos.transcriptOffsetMs)
+        const res = await doubtApi.recordWithContext({
+          roomId,
+          segmentIndex: pos.segmentIndex,
+          transcriptOffsetMs: pos.transcriptOffsetMs,
+          recordingOffsetMs: livePos?.recordingOffsetMs,
+          utteranceSnapshot: livePos?.utteranceSnapshot,
+          clientSentAt: livePos?.clientSentAt
+        })
         if (res?.success) {
           setStatus('confirmed')
           sounds.send()

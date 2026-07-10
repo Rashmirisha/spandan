@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useSocketStore from '../stores/socketStore'
 import useRoomStore from '../stores/roomStore'
+import useTeacherPositionStore from '../stores/teacherPositionStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -60,12 +61,16 @@ function RoomDetailPage() {
 
   // Segment tracking
   const [currentSegment, setCurrentSegment] = useState(0)
+  const currentSegmentRef = useRef(0)
+  useEffect(() => { currentSegmentRef.current = currentSegment }, [currentSegment])
   const [segmentTranscript, setSegmentTranscript] = useState('')
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
 
   // Question timer for teacher visibility
   const [activeQuestion, setActiveQuestion] = useState(null)
+  const teacherPositionBroadcastRef = useRef(null)
+  const roomStartedAtRef = useRef(null)
   const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
   const questionTimerRef = useRef(null)
 
@@ -668,7 +673,52 @@ function RoomDetailPage() {
       }
     }, 10000)
   }, [sendForTranscription])
-  
+
+  // ============================================================
+  // LIVE TEACHER POSITION BROADCAST
+  // While recording, broadcast our wall-clock recording offset every 2s so
+  // students can attach it to their "I'm lost" signals. Without this,
+  // student signals arrive with recordingOffsetMs=0 and the topic resolver
+  // can't tell what we were teaching when the spike happened.
+  // ============================================================
+  const startTeacherBroadcast = useCallback(() => {
+    // Stop any prior broadcast (defensive)
+    if (teacherPositionBroadcastRef.current) {
+      clearInterval(teacherPositionBroadcastRef.current)
+      teacherPositionBroadcastRef.current = null
+    }
+    const posStore = useTeacherPositionStore.getState()
+    roomStartedAtRef.current = Date.now()
+    posStore.startSession(room._id, room.code, roomStartedAtRef.current).catch(() => {})
+    teacherPositionBroadcastRef.current = setInterval(() => {
+      const offsetMs = Date.now() - (roomStartedAtRef.current || Date.now())
+      const seg = currentSegmentRef.current ?? 0
+      const utterance = accumulatedTranscriptRef.current?.slice(-200) || ''
+      useTeacherPositionStore.getState().broadcastPosition(room.code, {
+        recordingOffsetMs: offsetMs,
+        segmentIndex: seg,
+        utteranceSnapshot: utterance
+      })
+    }, 2000)
+  }, [room])
+
+  const stopTeacherBroadcast = useCallback(() => {
+    if (teacherPositionBroadcastRef.current) {
+      clearInterval(teacherPositionBroadcastRef.current)
+      teacherPositionBroadcastRef.current = null
+    }
+    useTeacherPositionStore.getState().reset()
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (teacherPositionBroadcastRef.current) {
+        clearInterval(teacherPositionBroadcastRef.current)
+      }
+    }
+  }, [])
+
   const startRecording = async ({ resetSegment = true } = {}) => {
     if (recordingActiveRef.current) return
 
@@ -716,6 +766,10 @@ function RoomDetailPage() {
 
       startTranscriptionWindow()
 
+      // Live teacher position broadcast so students can attach their "I'm lost"
+      // signals to the current recording offset (otherwise spikes stack at 00:00).
+      startTeacherBroadcast()
+
     } catch (error) {
       console.error('Error starting recording:', error)
       setModelStatus('Microphone access denied')
@@ -724,6 +778,9 @@ function RoomDetailPage() {
 
   const stopRecording = async () => {
     recordingActiveRef.current = false
+
+    // Stop live teacher position broadcast
+    stopTeacherBroadcast()
 
     // Stop the current 10-second recorder window.
     if (transcriptionIntervalRef.current) {
