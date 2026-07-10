@@ -304,6 +304,9 @@ io.on('connection', (socket) => {
         userId,
         segmentIndex: data.segmentIndex || 0,
         transcriptOffsetMs: data.transcriptOffsetMs || 0,
+        recordingOffsetMs: typeof data.recordingOffsetMs === 'number' ? data.recordingOffsetMs : null,
+        utteranceSnapshot: data.utteranceSnapshot || '',
+        clientSentAt: data.clientSentAt || null,
         client: 'socket'
       })
       if (!result.ok) {
@@ -316,11 +319,58 @@ io.on('connection', (socket) => {
         roomId: String(data.roomId),
         segmentIndex: data.segmentIndex || 0,
         count: segCount,
+        recordingOffsetMs: result.signal.recordingOffsetMs,
+        recordingOffsetLabel: result.signal.recordingOffsetLabel,
+        utteranceSnapshot: result.signal.utteranceSnapshot || '',
         timestamp: Date.now()
       })
-      socket.emit('doubt:confirmed', { segmentIndex: data.segmentIndex || 0 })
+      socket.emit('doubt:confirmed', {
+        segmentIndex: data.segmentIndex || 0,
+        recordingOffsetLabel: result.signal.recordingOffsetLabel
+      })
     } catch (err) {
       console.error('[socket] doubt:signal error:', err.message)
+    }
+  })
+
+  // ============================================================================
+  // NEW: Live position broadcast (so students know what the teacher is on)
+  // ============================================================================
+  socket.on('teacher:position', async (data) => {
+    try {
+      if (!data || !data.roomCode) return
+      // Forward to everyone in the room EXCEPT the teacher themselves
+      // (they don't need to see their own position broadcast)
+      socket.to(data.roomCode).emit('teacher:position', {
+        segmentIndex: data.segmentIndex || 0,
+        transcriptOffsetMs: data.transcriptOffsetMs || 0,
+        recordingOffsetMs: data.recordingOffsetMs || 0,
+        recordingOffsetLabel: data.recordingOffsetLabel || '00:00',
+        utterance: data.utterance || '',
+        timestamp: Date.now()
+      })
+    } catch (err) {
+      console.error('[socket] teacher:position error:', err.message)
+    }
+  })
+
+  // NEW: Teacher announces the start of the recording session
+  socket.on('teacher:session-start', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { startRoomSession } = await import('./services/doubtService.js')
+      const result = await startRoomSession(data.roomId, userId)
+      if (!result.ok) return
+      // Broadcast to everyone in the room
+      io.to(data.roomCode).emit('teacher:session-start', {
+        roomId: String(data.roomId),
+        roomStartedAt: result.roomStartedAt,
+        timestamp: Date.now()
+      })
+    } catch (err) {
+      console.error('[socket] teacher:session-start error:', err.message)
     }
   })
 

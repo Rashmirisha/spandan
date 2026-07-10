@@ -86,6 +86,7 @@ export const questionApi = {
 export default api
 // Contextual Doubt-Anchored Polling API
 export const doubtApi = {
+  // Existing
   record: (roomId, segmentIndex, transcriptOffsetMs) =>
     api.post('/doubts', { roomId, segmentIndex, transcriptOffsetMs }),
   retract: (roomId) => api.post('/doubts/retract', { roomId }),
@@ -93,5 +94,27 @@ export const doubtApi = {
   getSpikes: (roomId, minMarkCount) =>
     api.get(`/doubts/room/${roomId}/spikes${minMarkCount ? `?minMarkCount=${minMarkCount}` : ''}`),
   getForQuestion: (roomId, questionId) =>
-    api.get(`/doubts/room/${roomId}/question/${questionId}`)
+    api.get(`/doubts/room/${roomId}/question/${questionId}`),
+  // NEW: session clock + time-anchored queries
+  startSession: (roomId) => api.post(`/doubts/room/${roomId}/session/start`),
+  getSession: (roomId) => api.get(`/doubts/room/${roomId}/session`),
+  getTimelineSpikes: (roomId, opts = {}) => {
+    const params = new URLSearchParams()
+    if (opts.bucketMs) params.set('bucketMs', opts.bucketMs)
+    if (opts.minMarkCount) params.set('minMarkCount', opts.minMarkCount)
+    const q = params.toString()
+    return api.get(`/doubts/room/${roomId}/spikes/timeline${q ? `?${q}` : ''}`)
+  },
+  getSignals: (roomId, limit = 200) =>
+    api.get(`/doubts/room/${roomId}/signals?limit=${limit}`),
+  // NEW: full record with timing context (replaces record())
+  recordWithContext: (payload) =>
+    api.post('/doubts', {
+      roomId: payload.roomId,
+      segmentIndex: payload.segmentIndex || 0,
+      transcriptOffsetMs: payload.transcriptOffsetMs || 0,
+      recordingOffsetMs: payload.recordingOffsetMs ?? null,
+      utteranceSnapshot: payload.utteranceSnapshot || '',
+      clientSentAt: payload.clientSentAt || Date.now()
+    })
 }
