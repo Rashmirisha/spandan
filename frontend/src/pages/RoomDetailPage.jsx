@@ -1094,7 +1094,7 @@ function RoomDetailPage() {
                 border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
               }}>
                 <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
-                  â±ï¸ Answer
+                  ⚠ Answer
                 </span>
                 <span style={{
                   fontSize: '20px',
@@ -1122,7 +1122,7 @@ function RoomDetailPage() {
                 border: '2px solid #ef4444'
               }}>
                 <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
-                  â±ï¸ Time's Up!
+                  ⚠ Time's Up!
                 </span>
               </div>
             )}
@@ -1696,7 +1696,7 @@ function RoomDetailPage() {
               fontSize: '48px',
               marginBottom: '16px',
               animation: 'spin 1s linear infinite'
-            }}>â³</div>
+            }}>⏳</div>
             <h3 style={{
               margin: '0 0 8px',
               color: 'var(--text-primary)',

@@ -593,7 +593,7 @@ function StudentRoomPage() {
                   margin: '0 auto 24px',
                   fontSize: '40px'
                 }}>
-                  â³
+                  ⏳
                 </div>
                 <h2 style={{ fontSize: '24px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '12px' }}>
                   Waiting for Next Question
