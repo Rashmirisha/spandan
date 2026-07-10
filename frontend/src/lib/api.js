@@ -118,3 +118,10 @@ export const doubtApi = {
       clientSentAt: payload.clientSentAt || Date.now()
     })
 }
+
+// Topic markers API -- teacher sets "what we were on at this time"
+export const topicApi = {
+  set: (roomId, payload) => api.post(`/topics/room/${roomId}`, payload),
+  remove: (roomId, markerId) => api.delete(`/topics/room/${roomId}/${markerId}`),
+  list: (roomId) => api.get(`/topics/room/${roomId}`)
+}

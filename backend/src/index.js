@@ -16,6 +16,7 @@ import transcriptionRoutes from './routes/transcription.js'
 import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import doubtRoutes from './routes/doubts.js'
+import topicRoutes from './routes/topics.js'
 
 // Import models for reference
 import './models/index.js'
@@ -118,6 +119,7 @@ app.use('/api/transcription', transcriptionRoutes)
 app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/doubts', doubtRoutes)
+app.use('/api/topics', topicRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -371,6 +373,49 @@ io.on('connection', (socket) => {
       })
     } catch (err) {
       console.error('[socket] teacher:session-start error:', err.message)
+    }
+  })
+
+  // NEW: Teacher sets a topic marker -- broadcast to room so students + UI sync
+  socket.on('teacher:topic-set', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { setTopic } = await import('./services/topicService.js')
+      const result = await setTopic({
+        roomId: data.roomId,
+        teacherId: userId,
+        startMs: data.startMs,
+        endMs: data.endMs,
+        label: data.label,
+        note: data.note
+      })
+      if (!result.ok) return
+      io.to(data.roomCode).emit('teacher:topic-set', {
+        marker: result.marker
+      })
+    } catch (err) {
+      console.error('[socket] teacher:topic-set error:', err.message)
+    }
+  })
+
+  // NEW: Teacher removes a topic marker
+  socket.on('teacher:topic-delete', async (data) => {
+    try {
+      if (!data || !data.roomId || !data.roomCode) return
+      const userId = connectedUsers.get(socket.id)
+      if (!userId) return
+      const { deleteTopic } = await import('./services/topicService.js')
+      const result = await deleteTopic({
+        roomId: data.roomId,
+        teacherId: userId,
+        markerId: data.markerId
+      })
+      if (!result.ok) return
+      io.to(data.roomCode).emit('teacher:topic-delete', { markerId: data.markerId })
+    } catch (err) {
+      console.error('[socket] teacher:topic-delete error:', err.message)
     }
   })
 

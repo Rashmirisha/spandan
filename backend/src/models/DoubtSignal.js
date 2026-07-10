@@ -108,11 +108,23 @@ doubtSignalSchema.statics.countDistinctStudentsByRecordingTime = async function 
             { $floor: { $divide: ['$recordingOffsetMs', bucketMs] } },
             bucketMs
           ]
-        }
+        },
+        // Carry forward fields we still need in later stages
+        studentHash: 1,
+        utteranceSnapshot: 1
       }
     },
-    { $group: { _id: '$bucket', uniqueStudents: { $addToSet: '$studentHash' } } },
-    { $project: { recordingOffsetMs: '$_id', count: { $size: '$uniqueStudents' }, _id: 0 } },
+    { $group: {
+      _id: '$bucket',
+      uniqueStudents: { $addToSet: '$studentHash' },
+      sampleUtterance: { $first: '$utteranceSnapshot' }
+    } },
+    { $project: {
+      recordingOffsetMs: '$_id',
+      count: { $size: '$uniqueStudents' },
+      sampleUtterance: '$sampleUtterance',
+      _id: 0
+    } },
     { $sort: { recordingOffsetMs: 1 } }
   ])
 }

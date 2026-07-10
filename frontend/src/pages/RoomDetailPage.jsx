@@ -13,6 +13,7 @@ import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import ConfusionSpikePanel from '../components/ConfusionSpikePanel'
+import TopicMarkerBar from '../components/TopicMarkerBar'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
@@ -1601,6 +1602,8 @@ function RoomDetailPage() {
       {room?._id && (
         <div style={{ padding: '0 32px 24px', maxWidth: '420px', marginLeft: 'auto' }}>
           <ConfusionSpikePanel roomId={room._id} roomCode={room.code} />
+          {/* Topic markers -- teacher sets "what we were on at this time" so spike cards show real topics */}
+          <TopicMarkerBar roomId={room._id} roomCode={room.code} editable />
         </div>
       )}
 

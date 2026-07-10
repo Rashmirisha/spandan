@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import mongoose from 'mongoose'
 import { DoubtSignal, Room } from '../models/index.js'
+import { annotateSpikesWithTopics } from './topicService.js'
 
 /**
  * Per-room salt for anonymous student hashes. Stored on Room.doubtSalt.
@@ -194,14 +195,17 @@ export async function detectSpikes ({ roomId, minMarkCount = 3, spikeStdDevMulti
  */
 export async function getSpikeDetails ({ roomId, bucketMs = 5000, minMarkCount = 3 }) {
   const bucketCounts = await DoubtSignal.countDistinctStudentsByRecordingTime(roomId, bucketMs)
-  const spikes = bucketCounts
+  let spikes = bucketCounts
     .filter(b => b.count >= minMarkCount)
     .map(b => ({
       recordingOffsetMs: b.recordingOffsetMs,
       recordingOffsetLabel: formatMs(b.recordingOffsetMs),
-      count: b.count
+      count: b.count,
+      sampleUtterance: b.sampleUtterance || ''
     }))
-    .sort((a, b) => b.count - a.count)
+    .sort((a, b) => a.recordingOffsetMs - b.recordingOffsetMs)
+  // Augment each spike with the topic label (teacher-set marker or transcript proxy)
+  spikes = await annotateSpikesWithTopics({ roomId, spikes })
   return { spikes, bucketMs }
 }
 
@@ -217,7 +221,7 @@ export async function getSignalsForRoom (roomId, opts = {}) {
     .sort({ recordingOffsetMs: 1, createdAt: 1 })
     .limit(limit)
     .lean()
-  return signals.map(s => ({
+  const mapped = signals.map(s => ({
     _id: s._id,
     segmentIndex: s.segmentIndex,
     transcriptOffsetMs: s.transcriptOffsetMs,
@@ -227,6 +231,14 @@ export async function getSignalsForRoom (roomId, opts = {}) {
     studentHashShort: (s.studentHash || '').slice(0, 8),
     clientSentAt: s.clientSentAt || s.createdAt,
     retracted: !!s.retracted
+  }))
+  // Annotate each signal with topic label so the timeline can show topic per-tap
+  const { annotateSpikesWithTopics } = await import('./topicService.js')
+  const spikesForAnnotation = mapped.map(s => ({ recordingOffsetMs: s.recordingOffsetMs || 0 }))
+  const annotated = await annotateSpikesWithTopics({ roomId, spikes: spikesForAnnotation })
+  return mapped.map((s, i) => ({
+    ...s,
+    topic: annotated[i]?.topic || { label: '', source: 'none' }
   }))
 }
 
