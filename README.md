@@ -424,6 +424,3 @@ What's planned next (in priority order):
 
 ---
 
-## License
-
-Private — All rights reserved. © Rashmirisha.
