@@ -89,14 +89,26 @@ export async function startRoomSession (roomId, teacherId) {
   if (String(room.teacher) !== String(teacherId)) {
     return { ok: false, reason: 'not_teacher' }
   }
+  // Capture the previous session start (if any). If the previous session
+  // was active recently (within SESSION_GAP_MS) we treat this as the SAME
+  // session being re-asserted (teacher hit Start Recording again, or the
+  // socket re-fired). In that case we DO NOT close any active ConfusionEvents
+  // -- they belong to the current recording and must stay alive.
+  const SESSION_GAP_MS = 5 * 60 * 1000 // 5 minutes
+  const previousStart = room.roomStartedAt ? new Date(room.roomStartedAt) : null
+  const isNewSession = !previousStart ||
+    (Date.now() - previousStart.getTime()) > SESSION_GAP_MS
   // Reset session clock
   room.roomStartedAt = new Date()
   await room.save()
-  // Close any prior confusion events so the new session starts clean
-  ConfusionEvent.updateMany(
-    { roomId, status: 'active' },
-    { $set: { status: 'closed', closedAt: new Date() } }
-  ).catch(e => console.warn('[doubtService] closeAllActiveForRoom on session start:', e.message))
+  if (isNewSession) {
+    // Fresh session boundary -- close any prior active ConfusionEvents so
+    // the new session starts clean.
+    ConfusionEvent.updateMany(
+      { roomId, status: 'active' },
+      { $set: { status: 'closed', closedAt: new Date() } }
+    ).catch(e => console.warn('[doubtService] closeAllActiveForRoom on session start:', e.message))
+  }
   // Close auto-topic markers that pre-date this session so they don't haunt
   // the new session. Teacher-set markers (source='manual', confirmed=true)
   // are intentionally preserved across sessions.
