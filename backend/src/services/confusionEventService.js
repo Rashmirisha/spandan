@@ -1,6 +1,7 @@
 import mongoose from 'mongoose'
 import { ConfusionEvent } from '../models/index.js'
 import { resolveTopicForOffset } from './topicService.js'
+import { scoreEvent } from './confusionScoring.js'
 
 /**
  * confusionEventService -- live "what topic are students confused about RIGHT NOW?"
@@ -205,8 +206,16 @@ export async function attachSignalToEvent ({
  * Format a ConfusionEvent doc for the dashboard wire (drops mongoose internals,
  * derives timestamps into UI-ready strings).
  */
-export function formatForClient (event) {
+export function formatForClient (event, { nowMs = Date.now() } = {}) {
   if (!event) return null
+  // Weighted score (Milestone 3) -- count + duration + recency + source
+  const scoring = scoreEvent({
+    confusedStudentCount: event.confusedStudentCount || 0,
+    startTimestamp: event.startTimestamp ? new Date(event.startTimestamp).getTime() : null,
+    latestTimestamp: event.latestTimestamp ? new Date(event.latestTimestamp).getTime() : null,
+    topicSource: event.topicSource || 'none',
+    nowMs
+  })
   return {
     id: String(event._id),
     roomId: String(event.roomId),
@@ -221,11 +230,16 @@ export function formatForClient (event) {
     startedAtLabel: formatWallClock(event.startTimestamp),
     lastUpdateAt: event.latestTimestamp,
     lastUpdateLabel: formatWallClock(event.latestTimestamp),
+    durationMs: scoring.durationMs,
     startRecordingOffsetMs: event.startRecordingOffsetMs,
     latestRecordingOffsetMs: event.latestRecordingOffsetMs,
     latestTranscriptSnippet: event.latestTranscriptSnippet || '',
     status: event.status,
-    signalCount: Array.isArray(event.signalIds) ? event.signalIds.length : 0
+    signalCount: Array.isArray(event.signalIds) ? event.signalIds.length : 0,
+    // Milestone 3: weighted scoring
+    score: scoring.score,
+    tier: scoring.tier ? { name: scoring.tier.name, label: scoring.tier.label, emoji: scoring.tier.emoji, description: scoring.tier.description } : null,
+    scoreComponents: scoring.components
   }
 }
 

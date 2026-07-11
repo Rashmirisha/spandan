@@ -75,7 +75,11 @@ router.post('/', authenticate, async (req, res) => {
           roomId,
           teacherId: req.user._id,
           startMs: nowMs,
-          endMs: null,
+          // Auto-markers get a bounded span (default 5 minutes) so a stale
+          // marker from a previous session doesn't haunt the current one.
+          // The next auto-marker created will close out this one via
+          // the `lastAuto.endMs == null` branch above.
+          endMs: nowMs + 5 * 60 * 1000,
           label: proposal.label,
           source: proposal.source || 'auto',
           confidence: proposal.confidence || null,

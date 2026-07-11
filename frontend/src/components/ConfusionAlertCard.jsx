@@ -1,46 +1,45 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { confusionApi } from '../lib/api.js'
 import { useSocketStore } from '../stores/socketStore.js'
 
 /**
- * ConfusionAlertCard -- one live card per (room, topic).
+ * ConfusionAlertCard -- THE single live confusion card per room.
  *
- * Topic-Aware Confusion (Milestone 2): when a student presses "I'm Lost",
- * the backend attaches the signal to an active ConfusionEvent. Subsequent
- * presses for the same topic MERGE into the event (count goes up, latest
- * timestamp / snippet refresh). When the topic changes, the prior event is
- * closed and a fresh one opens.
+ * Milestone 3 redesign:
+ *   - Tier-styled shell (green/yellow/red) based on backend `tier.name`
+ *   - Animated count-up when the student count rises
+ *   - Status pill (Live / Resolved) + pulsing dot when active
+ *   - Topic source badge (AI / Teacher / Snippet)
+ *   - Subtopic line, latest transcript snippet
+ *   - Priority score badge with tier emoji
  *
- * This card subscribes to two socket events:
- *   - "confusion:update"  -- count changed, or a new event opened
- *   - "confusion:closed"  -- the active event was closed (topic shift)
+ * History is owned by <ConfusionTimeline /> -- this card only shows the live
+ * card (or the most recent if no active event exists).
  *
- * On first mount we hydrate from `confusionApi.getActive`, fall back to
- * `confusionApi.getLatest` if no active event exists so the teacher can
- * still see "what just happened" during the topic-shift millisecond.
+ * Empty states:
+ *   - loading
+ *   - "No students have reported confusion yet."
+ *   - "Start recording to enable topic-aware confusion detection."
  */
-export default function ConfusionAlertCard ({ roomId }) {
+export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
   const socket = useSocketStore(s => s.socket)
   const [event, setEvent] = useState(null)
   const [latest, setLatest] = useState(null)
-  const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [tickMs, setTickMs] = useState(Date.now())
+  const [displayCount, setDisplayCount] = useState(0)
+  const [pulseKey, setPulseKey] = useState(0)
+  const prevCountRef = useRef(0)
 
   const fetchAll = useCallback(async () => {
     if (!roomId) return
     try {
-      const [active, latestRes, historyRes] = await Promise.all([
+      const [active, latestRes] = await Promise.all([
         confusionApi.getActive(roomId).catch(() => ({ event: null })),
-        confusionApi.getLatest(roomId).catch(() => ({ event: null })),
-        confusionApi.getHistory(roomId, 10).catch(() => ({ events: [] }))
+        confusionApi.getLatest(roomId).catch(() => ({ event: null }))
       ])
       setEvent(active.event || null)
-      // Fall back to latest so the "Just now" card stays visible
-      // when the topic just shifted and no active event yet exists.
       setLatest(latestRes.event || null)
-      setHistory(Array.isArray(historyRes.events) ? historyRes.events : [])
       setError('')
     } catch (e) {
       setError(e?.message || 'Failed to fetch confusion data')
@@ -51,25 +50,21 @@ export default function ConfusionAlertCard ({ roomId }) {
 
   useEffect(() => {
     fetchAll()
-    const t = setInterval(fetchAll, 8000) // safety refresh in case socket misses
+    const t = setInterval(fetchAll, 8000)
     return () => clearInterval(t)
   }, [fetchAll])
 
-  // Socket subscriptions
   useEffect(() => {
     if (!socket) return
     const onUpdate = (data) => {
       if (String(data.roomId) !== String(roomId)) return
       setEvent(data.event)
       setLatest(data.event)
-      setTickMs(Date.now())
     }
     const onClosed = (data) => {
       if (String(data.roomId) !== String(roomId)) return
-      // The closed event may have been the active one -- move it to latest
       setEvent(null)
       if (data.event) setLatest(data.event)
-      setTickMs(Date.now())
     }
     socket.on('confusion:update', onUpdate)
     socket.on('confusion:closed', onClosed)
@@ -79,11 +74,35 @@ export default function ConfusionAlertCard ({ roomId }) {
     }
   }, [socket, roomId])
 
+  // Animated count-up: when target count increases, tween 0 -> target over ~600ms
+  const card = event || latest
+  const targetCount = card?.confusedStudentCount || 0
+  useEffect(() => {
+    const from = prevCountRef.current
+    const to = targetCount
+    if (from === to) return
+    prevCountRef.current = to
+    setPulseKey(k => k + 1)
+    if (from === 0) { setDisplayCount(to); return }
+    const duration = 600
+    const start = performance.now()
+    let raf
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / duration)
+      const eased = 1 - Math.pow(1 - t, 3) // ease-out cubic
+      setDisplayCount(Math.round(from + (to - from) * eased))
+      if (t < 1) raf = requestAnimationFrame(tick)
+      else setDisplayCount(to)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => raf && cancelAnimationFrame(raf)
+  }, [targetCount])
+
   if (loading) {
     return (
-      <div className="cac-shell cac-shell--idle">
+      <div className="cac-shell cac-shell--idle" data-loading="true">
         <div className="cac-header">
-          <h3>⚠ Confusion alert</h3>
+          <h3>⚠ Live Confusion Alert</h3>
         </div>
         <div className="cac-body cac-body--loading">Loading…</div>
       </div>
@@ -94,58 +113,72 @@ export default function ConfusionAlertCard ({ roomId }) {
     return (
       <div className="cac-shell cac-shell--idle">
         <div className="cac-header">
-          <h3>⚠ Confusion alert</h3>
+          <h3>⚠ Live Confusion Alert</h3>
         </div>
         <div className="cac-body cac-body--error">{error}</div>
       </div>
     )
   }
 
-  // Choose what to render: active event wins; fall back to latest
-  const card = event || latest
   if (!card) {
     return (
-      <div className="cac-shell cac-shell--idle">
+      <div className="cac-shell cac-shell--idle cac-shell--empty">
         <div className="cac-header">
-          <h3>⚠ Confusion alert</h3>
+          <h3>⚠ Live Confusion Alert</h3>
+          <span className="cac-status cac-status--idle">No events</span>
         </div>
-        <div className="cac-body cac-body--idle">
+        <div className="cac-body cac-body--empty">
           <div className="cac-empty-icon">✅</div>
-          <div>No active confusion event. Students are keeping up.</div>
+          <div>
+            {hasTranscript
+              ? 'No students have reported confusion yet.'
+              : 'Start recording to enable topic-aware confusion detection.'}
+          </div>
         </div>
       </div>
     )
   }
 
-  const confusionsSinceStart = card.confusedStudentCount || 0
+  const isActive = !!event
+  const tierClass = tierToClass(card.tier?.name)
+  const tierLabel = card.tier?.label || 'Info'
+  const tierEmoji = card.tier?.emoji || '🟢'
   const sourceLabel = sourceToLabel(card.topic?.source)
   const sourceClass = sourceToClass(card.topic?.source)
-  const isActive = !!event
 
   return (
     <div
-      className={`cac-shell${isActive ? ' cac-shell--live' : ' cac-shell--idle'}`}
+      className={`cac-shell cac-shell--${tierClass}${isActive ? ' cac-shell--live' : ' cac-shell--resolved'}`}
       role="region"
-      aria-label={isActive ? 'Active confusion alert' : 'Recent confusion event'}
+      aria-label={isActive ? 'Active confusion alert' : 'Recent resolved confusion event'}
+      data-tier={tierClass}
+      data-status={isActive ? 'live' : 'resolved'}
     >
       <div className="cac-header">
         <h3>
-          ⚠ Confusion Alert
-          {isActive && <span className="cac-live-dot" aria-label="live" />}
+          ⚠ Live Confusion Alert
+          {isActive && (
+            <span className="cac-live-dot" aria-label="live" key={`pulse-${pulseKey}`} />
+          )}
         </h3>
-        <span className={`cac-source-badge ${sourceClass}`}>{sourceLabel}</span>
+        <div className="cac-header-right">
+          <span className={`cac-source-badge ${sourceClass}`}>{sourceLabel}</span>
+          <span className={`cac-status cac-status--${isActive ? 'live' : 'resolved'}`}>
+            {isActive ? 'Live' : 'Resolved'}
+          </span>
+        </div>
       </div>
 
       <div className="cac-body">
-        <div className="cac-row">
+        <div className="cac-row cac-row--topic">
           <div className="cac-row-label">Topic</div>
           <div className="cac-row-value cac-row-value--topic">
-            {card.topic?.label || <em>(no topic detected)</em>}
+            {card.topic?.label || <em className="cac-muted">(no topic detected)</em>}
           </div>
         </div>
 
         {card.topic?.subtopic && (
-          <div className="cac-row">
+          <div className="cac-row cac-row--subtopic">
             <div className="cac-row-label">Subtopic</div>
             <div className="cac-row-value">{card.topic.subtopic}</div>
           </div>
@@ -154,9 +187,9 @@ export default function ConfusionAlertCard ({ roomId }) {
         <div className="cac-row cac-row--count">
           <div className="cac-row-label">Students Confused</div>
           <div className="cac-row-value cac-row-value--count">
-            <span className="cac-count-num">{confusionsSinceStart}</span>
+            <span className="cac-count-num" key={`n-${displayCount}-${pulseKey}`}>{displayCount}</span>
             <span className="cac-count-suffix">
-              {confusionsSinceStart === 1 ? 'student' : 'students'}
+              {displayCount === 1 ? 'student' : 'students'}
             </span>
           </div>
         </div>
@@ -167,8 +200,14 @@ export default function ConfusionAlertCard ({ roomId }) {
             <div className="cac-row-value cac-row-value--small">{card.startedAtLabel || '—'}</div>
           </div>
           <div>
-            <div className="cac-row-label cac-row-label--small">Last Update</div>
+            <div className="cac-row-label cac-row-label--small">Last Updated</div>
             <div className="cac-row-value cac-row-value--small">{card.lastUpdateLabel || '—'}</div>
+          </div>
+          <div>
+            <div className="cac-row-label cac-row-label--small">Duration</div>
+            <div className="cac-row-value cac-row-value--small">
+              {formatDuration(card.durationMs || 0)}
+            </div>
           </div>
         </div>
 
@@ -181,42 +220,43 @@ export default function ConfusionAlertCard ({ roomId }) {
           </div>
         )}
 
-        {!isActive && (
-          <div className="cac-row cac-row--note">
-            <em>Topic just changed. Waiting for the next signal to open a new alert.</em>
+        <div className="cac-row cac-row--meta">
+          <div className="cac-meta-block">
+            <div className="cac-row-label cac-row-label--small">Topic Source</div>
+            <div className="cac-row-value cac-row-value--small">
+              <span className={`cac-source-badge ${sourceClass}`}>{sourceLabel}</span>
+            </div>
           </div>
-        )}
+          <div className="cac-meta-block">
+            <div className="cac-row-label cac-row-label--small">Priority Tier</div>
+            <div className="cac-row-value cac-row-value--small">
+              <span className={`cac-tier-badge cac-tier-badge--${tierClass}`}>
+                {tierEmoji} {tierLabel}
+                {card.score != null ? ` · ${card.score.toFixed ? card.score.toFixed(1) : card.score}` : ''}
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
-
-      {history.length > 0 && (
-        <details className="cac-history">
-          <summary>History ({history.length} events)</summary>
-          <ol className="cac-history-list">
-            {history.slice(0, 10).map((e) => (
-              <li key={e.id} className={`cac-history-row${e.status === 'active' ? ' cac-history-row--active' : ''}`}>
-                <div className="cac-history-line">
-                  <strong>{e.topic?.label || '(no topic)'}</strong>
-                  {' · '}
-                  <span>{e.confusedStudentCount || 0}</span>
-                  {' · '}
-                  <time>{e.startedAtLabel || '—'}</time>
-                  {e.status === 'active' && <span className="cac-live-dot" aria-label="live" />}
-                </div>
-              </li>
-            ))}
-          </ol>
-        </details>
-      )}
     </div>
   )
 }
 
+function tierToClass (name) {
+  switch (name) {
+    case 'green': return 'green'
+    case 'yellow': return 'yellow'
+    case 'red': return 'red'
+    default: return 'idle'
+  }
+}
+
 function sourceToLabel (source) {
   switch (source) {
-    case 'marker': return 'teacher marker'
-    case 'auto': return 'auto topic'
-    case 'transcript': return 'transcript snippet'
-    case 'none': return 'no topic'
+    case 'marker': return 'Teacher'
+    case 'auto': return 'AI'
+    case 'transcript': return 'Snippet'
+    case 'none': return 'No topic'
     default: return ''
   }
 }
@@ -229,4 +269,13 @@ function sourceToClass (source) {
     case 'none': return 'cac-source-badge--none'
     default: return ''
   }
+}
+
+function formatDuration (ms) {
+  if (!ms || ms < 0) return '—'
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${min}:${String(s).padStart(2, '0')}`
 }

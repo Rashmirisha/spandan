@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import mongoose from 'mongoose'
-import { DoubtSignal, Room } from '../models/index.js'
+import { DoubtSignal, Room, TopicMarker, ConfusionEvent } from '../models/index.js'
 import { annotateSpikesWithTopics } from './topicService.js'
 
 /**
@@ -89,8 +89,29 @@ export async function startRoomSession (roomId, teacherId) {
   if (String(room.teacher) !== String(teacherId)) {
     return { ok: false, reason: 'not_teacher' }
   }
+  // Reset session clock
   room.roomStartedAt = new Date()
   await room.save()
+  // Close any prior confusion events so the new session starts clean
+  ConfusionEvent.updateMany(
+    { roomId, status: 'active' },
+    { $set: { status: 'closed', closedAt: new Date() } }
+  ).catch(e => console.warn('[doubtService] closeAllActiveForRoom on session start:', e.message))
+  // Close auto-topic markers that pre-date this session so they don't haunt
+  // the new session. Teacher-set markers (source='manual', confirmed=true)
+  // are intentionally preserved across sessions.
+  const sessionStartTs = room.roomStartedAt
+  TopicMarker.updateMany(
+    {
+      roomId,
+      source: 'auto',
+      $or: [
+        { createdAt: { $lt: sessionStartTs } },
+        { endMs: null }
+      ]
+    },
+    { $set: { endMs: 0 } }
+  ).catch(e => console.warn('[doubtService] close stale auto markers on session start:', e.message))
   return { ok: true, roomStartedAt: room.roomStartedAt }
 }
 

@@ -7,6 +7,10 @@ import {
   listForRoom,
   formatForClient
 } from '../services/confusionEventService.js'
+import {
+  buildTopicHeat,
+  buildHeatmap
+} from '../services/confusionScoring.js'
 
 const router = express.Router()
 
@@ -73,6 +77,53 @@ router.get('/room/:roomId', authenticate, authorize('teacher', 'admin'), async (
   } catch (err) {
     console.error('[confusion] list error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch confusion events' })
+  }
+})
+
+/**
+ * GET /api/confusion/room/:roomId/topic-heat
+ * Ranked list of topics by aggregated confusion score.
+ * Query params: topN (default 10, max 50)
+ */
+router.get('/room/:roomId/topic-heat', authenticate, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const room = await Room.findById(roomId).select('_id teacher')
+    if (!room) return res.status(404).json({ success: false, error: 'Room not found' })
+    if (String(room.teacher) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Only the room teacher can view topic heat' })
+    }
+    const topN = Math.min(parseInt(req.query.topN, 10) || 10, 50)
+    const events = await listForRoom({ roomId, limit: 200 })
+    const buckets = buildTopicHeat(events, topN)
+    res.json({ success: true, buckets })
+  } catch (err) {
+    console.error('[confusion] topic-heat error:', err)
+    res.status(500).json({ success: false, error: 'Failed to compute topic heat' })
+  }
+})
+
+/**
+ * GET /api/confusion/room/:roomId/heatmap
+ * Time-bucketed scores across the recent window.
+ * Query params: bucketMs (default 60s), windowMs (default 10min)
+ */
+router.get('/room/:roomId/heatmap', authenticate, authorize('teacher', 'admin'), async (req, res) => {
+  try {
+    const { roomId } = req.params
+    const room = await Room.findById(roomId).select('_id teacher')
+    if (!room) return res.status(404).json({ success: false, error: 'Room not found' })
+    if (String(room.teacher) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Only the room teacher can view heatmap' })
+    }
+    const bucketMs = Math.min(parseInt(req.query.bucketMs, 10) || 60000, 300000)
+    const windowMs = Math.min(parseInt(req.query.windowMs, 10) || 600000, 3600000)
+    const events = await listForRoom({ roomId, limit: 200 })
+    const heat = buildHeatmap(events, { bucketMs, windowMs })
+    res.json({ success: true, heat })
+  } catch (err) {
+    console.error('[confusion] heatmap error:', err)
+    res.status(500).json({ success: false, error: 'Failed to compute heatmap' })
   }
 })
 

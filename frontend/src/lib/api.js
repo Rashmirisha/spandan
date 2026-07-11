@@ -132,5 +132,7 @@ export const topicApi = {
 export const confusionApi = {
   getActive: (roomId) => api.get(`/confusion/room/${roomId}/active`),
   getLatest: (roomId) => api.get(`/confusion/room/${roomId}/latest`),
-  getHistory: (roomId, limit = 50) => api.get(`/confusion/room/${roomId}?limit=${limit}`)
+  getHistory: (roomId, limit = 50) => api.get(`/confusion/room/${roomId}?limit=${limit}`),
+  getHeatmap: (roomId, opts = {}) => api.get(`/confusion/room/${roomId}/heatmap?bucketMs=${opts.bucketMs || 60000}&windowMs=${opts.windowMs || 600000}`),
+  getTopicHeat: (roomId, topN = 10) => api.get(`/confusion/room/${roomId}/topic-heat?topN=${topN}`)
 }

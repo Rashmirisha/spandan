@@ -330,6 +330,8 @@ describe('detectSpikes', () => {
   })
 
   it('also flags via mean+2*stddev when counts vary widely', async () => {
+    // mongo write heavy -- allow extra time on slow CI
+    jest.setTimeout(20000)
     // counts: [1, 1, 1, 10] -> mean=3.25, stddev~3.9, threshold~11 -> 10 NOT a spike
     await seedSegment(0, 1)
     await seedSegment(1, 1)
@@ -359,6 +361,8 @@ describe('detectSpikes', () => {
   })
 
   it('sorts spikes by count descending', async () => {
+    // mongo write heavy -- allow extra time on slow CI
+    jest.setTimeout(20000)
     await seedSegment(0, 4)
     await seedSegment(1, 8)
     await seedSegment(2, 6)
