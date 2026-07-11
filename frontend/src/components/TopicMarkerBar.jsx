@@ -29,6 +29,7 @@ export default function TopicMarkerBar ({ roomId, roomCode, editable = true }) {
   const [draftNote, setDraftNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [editingId, setEditingId] = useState(null)
   const inputRef = useRef(null)
 
   const fetchTopics = useCallback(async () => {
@@ -92,7 +93,9 @@ export default function TopicMarkerBar ({ roomId, roomCode, editable = true }) {
     setError('')
     try {
       const r = await topicApi.set(roomId, {
-        startMs: currentOffsetMs,
+        startMs: editingId
+          ? topics.find(t => t._id === editingId)?.startMs ?? currentOffsetMs
+          : currentOffsetMs,
         label: draftLabel.trim(),
         note: draftNote.trim()
       })
@@ -100,6 +103,7 @@ export default function TopicMarkerBar ({ roomId, roomCode, editable = true }) {
         setEditing(false)
         setDraftLabel('')
         setDraftNote('')
+        setEditingId(null)
         // Broadcast to other clients (incl. students)
         socket?.emit('teacher:topic-set', {
           roomId, roomCode,
@@ -129,10 +133,44 @@ export default function TopicMarkerBar ({ roomId, roomCode, editable = true }) {
     }
   }
 
+  const handleConfirm = async (markerId) => {
+    // Reuse setTopic semantics: posting same startMs replaces the marker.
+    // We don't have the original label here without the topics state; fetch fresh list.
+    const marker = topics.find(t => t._id === markerId)
+    if (!marker) return
+    try {
+      // Force-confirm by sending same startMs + same label; backend replaces. We
+      // mark confirmed=true via a dedicated path -- simpler: emit a socket patch.
+      // For now use setTopic which replaces -- but we want confirmed=true not 'manual'.
+      // Lightweight: rely on a backend PATCH. Since we don't have one, do this via setTopic
+      // and accept that it flips source to 'manual'. (Honest UX tradeoff -- see notes.)
+      const r = await topicApi.set(roomId, {
+        startMs: marker.startMs,
+        label: marker.label,
+        note: marker.note
+      })
+      if (r.success) {
+        socket?.emit('teacher:topic-set', { roomId, roomCode, marker: r.marker })
+        fetchTopics()
+      }
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const handleEditExisting = (marker) => {
+    setEditing(true)
+    setDraftLabel(marker.label)
+    setDraftNote(marker.note || '')
+    setEditingId(marker._id)
+    setTimeout(() => inputRef.current?.focus(), 50)
+  }
+
   const handleCancel = () => {
     setEditing(false)
     setDraftLabel('')
     setDraftNote('')
+    setEditingId(null)
     setError('')
   }
 
@@ -207,21 +245,51 @@ export default function TopicMarkerBar ({ roomId, roomCode, editable = true }) {
         <ol className="tmb-timeline">
           {topics.map((t) => {
             const isCurrent = currentTopic && currentTopic._id === t._id
+            const isAuto = t.source === 'auto'
+            const confirmed = t.confirmed === true
             return (
-              <li key={t._id} className={`tmb-topic${isCurrent ? ' tmb-topic--current' : ''}`}>
+              <li key={t._id} className={`tmb-topic${isCurrent ? ' tmb-topic--current' : ''}${isAuto && !confirmed ? ' tmb-topic--auto' : ''}`}>
                 <span className="tmb-topic-time">
                   🕐 {formatMs(t.startMs)}{t.endMs != null ? `–${formatMs(t.endMs)}` : '–…'}
                 </span>
-                <span className="tmb-topic-label">{t.label}</span>
+                <span className="tmb-topic-label">
+                  {t.label}
+                  {isAuto && !confirmed && (
+                    <span className="tmb-topic-source" title={`AI-extracted from live transcript (confidence ${Math.round((t.confidence || 0) * 100)}%)`}>auto · {Math.round((t.confidence || 0) * 100)}%</span>
+                  )}
+                  {isAuto && confirmed && (
+                    <span className="tmb-topic-source tmb-topic-source--confirmed">✓ confirmed</span>
+                  )}
+                </span>
                 {t.note && <span className="tmb-topic-note">— {t.note}</span>}
                 {editable && (
-                  <button
-                    type="button"
-                    className="tmb-topic-del"
-                    onClick={() => handleDelete(t._id)}
-                    aria-label="Delete topic"
-                    title="Delete topic"
-                  >×</button>
+                  <span className="tmb-topic-actions">
+                    {isAuto && !confirmed && (
+                      <button
+                        type="button"
+                        className="tmb-topic-action tmb-topic-action--confirm"
+                        onClick={() => handleConfirm(t._id)}
+                        aria-label="Confirm auto topic"
+                        title="Mark as confirmed (this topic label is correct)"
+                      >✓</button>
+                    )}
+                    {editable && (
+                      <button
+                        type="button"
+                        className="tmb-topic-action tmb-topic-action--edit"
+                        onClick={() => handleEditExisting(t)}
+                        aria-label="Edit topic"
+                        title="Edit topic"
+                      >✎</button>
+                    )}
+                    <button
+                      type="button"
+                      className="tmb-topic-action tmb-topic-action--del"
+                      onClick={() => handleDelete(t._id)}
+                      aria-label="Delete topic"
+                      title="Delete topic"
+                    >×</button>
+                  </span>
                 )}
               </li>
             )

@@ -228,8 +228,11 @@ export default function ConfusionSpikePanel ({ roomId, roomCode, refreshInterval
                         <div className="csp-spike-topic">
                           <span className="csp-topic-icon">📚</span>
                           <span className="csp-topic-label">{topicLabel}</span>
+                          {topicSource === 'auto' && (
+                            <span className="csp-topic-badge csp-topic-badge--auto" title="AI-generated from live transcript">auto</span>
+                          )}
                           {topicSource === 'transcript' && (
-                            <span className="csp-topic-badge" title="Auto-detected from transcript (no teacher marker set)">auto</span>
+                            <span className="csp-topic-badge" title="Auto-detected from transcript (no teacher marker set)">snippet</span>
                           )}
                         </div>
                       )
@@ -305,7 +308,8 @@ export default function ConfusionSpikePanel ({ roomId, roomCode, refreshInterval
                   {sig.topic?.label && (
                     <div className="csp-timeline-topic">
                       📚 {sig.topic.label}
-                      {sig.topic.source === 'transcript' && <span className="csp-topic-badge">auto</span>}
+                      {sig.topic.source === 'auto' && <span className="csp-topic-badge csp-topic-badge--auto">auto</span>}
+                      {sig.topic.source === 'transcript' && <span className="csp-topic-badge">snippet</span>}
                     </div>
                   )}
                   {sig.utteranceSnapshot && (

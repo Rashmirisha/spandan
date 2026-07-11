@@ -28,7 +28,13 @@ const topicMarkerSchema = new mongoose.Schema(
     // The label the teacher typed, e.g. "Glycolysis — Investment Phase"
     label: { type: String, required: true, trim: true, maxlength: 120 },
     // Optional short sub-label
-    note: { type: String, trim: true, maxlength: 240, default: '' }
+    note: { type: String, trim: true, maxlength: 240, default: '' },
+    // 'manual' = teacher typed it, 'auto' = AI extracted from transcript
+    source: { type: String, enum: ['manual', 'auto'], default: 'manual' },
+    // Confidence score from AI generator (0-1). Only meaningful for source='auto'.
+    confidence: { type: Number, min: 0, max: 1, default: null },
+    // True when the teacher has explicitly accepted/edited this auto topic
+    confirmed: { type: Boolean, default: false }
   },
   { timestamps: true }
 )

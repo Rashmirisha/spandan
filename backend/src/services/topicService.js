@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 import { Room, TopicMarker, Transcript } from '../models/index.js'
+import { extractTopicProxy } from './topicGenerator.js'
 
 /**
  * topicService — teacher-set topic markers for "what was being taught when".
@@ -53,7 +54,9 @@ export async function setTopic ({ roomId, teacherId, startMs, label, note = '', 
         startMs,
         endMs: cleanEnd,
         label: cleanLabel,
-        note: cleanNote
+        note: cleanNote,
+        source: 'manual',
+        confirmed: true
       }
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -127,7 +130,7 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
     return {
       label: marker.label,
       note: marker.note || '',
-      source: 'marker',
+      source: marker.source === 'auto' ? 'auto' : 'marker',
       markerId: marker._id,
       startMs: marker.startMs,
       endMs: marker.endMs
@@ -193,23 +196,12 @@ export async function resolveTopicsForOffsets ({ roomId, offsets }) {
 }
 
 /**
- * Extract a short topic proxy from a transcript chunk — first ~6 significant
- * words. Skips filler/stopword-only sentences.
+ * Re-export the heuristic from topicGenerator.js so existing imports
+ * (`import { extractTopicProxy } from './topicService.js'`) keep working.
+ * topicGenerator.js owns the implementation; topicService.js owns the
+ * marker + transcript plumbing.
  */
-function extractTopicProxy (text) {
-  if (!text || typeof text !== 'string') return ''
-  const cleaned = text
-    .replace(/^\s*[\(\[]?(music|applause|laughter|blank_audio)[^\)\]]*[\)\]]?\s*/i, '')
-    .replace(/[\[\(]\s*(whistling|coughing|background)[^\]\)]*[\]\)]\s*/gi, '')
-    .trim()
-  if (!cleaned) return ''
-  // Take first ~8 words
-  const words = cleaned.split(/\s+/).filter(w => w.length > 1).slice(0, 8)
-  if (words.length === 0) return ''
-  let proxy = words.join(' ')
-  if (proxy.length > 60) proxy = proxy.slice(0, 57) + '…'
-  return proxy
-}
+export { extractTopicProxy }
 
 /**
  * Augment a list of spike buckets with their topic labels. The spike service

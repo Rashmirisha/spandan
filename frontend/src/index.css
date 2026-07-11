@@ -1134,6 +1134,103 @@ html {
   border-style: dashed;
 }
 
+.tmb-topic--auto {
+  background: linear-gradient(135deg, rgba(254, 243, 199, 0.45), rgba(252, 211, 77, 0.18));
+  border-left-color: #eab308;
+  border-left-width: 4px;
+}
+
+[data-theme="dark"] .tmb-topic--auto {
+  background: linear-gradient(135deg, rgba(133, 77, 14, 0.3), rgba(202, 138, 4, 0.15));
+  border-left-color: #fbbf24;
+}
+
+.tmb-topic-source {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(234, 179, 8, 0.2);
+  color: #854d0e;
+  vertical-align: middle;
+}
+
+[data-theme="dark"] .tmb-topic-source { background: rgba(251, 191, 36, 0.2); color: #fde047; }
+
+.tmb-topic-source--confirmed {
+  background: rgba(34, 197, 94, 0.2);
+  color: #166534;
+}
+
+[data-theme="dark"] .tmb-topic-source--confirmed { background: rgba(34, 197, 94, 0.25); color: #86efac; }
+
+.tmb-topic-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.tmb-topic-action {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.1s ease;
+}
+
+.tmb-topic-action--confirm {
+  color: #16a34a;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.tmb-topic-action--confirm:hover {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: #22c55e;
+}
+
+.tmb-topic-action--edit {
+  color: #6b7280;
+  border-color: rgba(107, 114, 128, 0.25);
+}
+.tmb-topic-action--edit:hover {
+  background: rgba(107, 114, 128, 0.12);
+  border-color: #6b7280;
+}
+
+.tmb-topic-action--del {
+  color: #9ca3af;
+}
+.tmb-topic-action--del:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+[data-theme="dark"] .tmb-topic-action--edit { color: #9ca3af; }
+[data-theme="dark"] .tmb-topic-action--del { color: #9ca3af; }
+
+/* Auto-badge variant for spike card topic chips */
+.csp-topic-badge--auto {
+  background: linear-gradient(135deg, rgba(234, 179, 8, 0.25), rgba(251, 191, 36, 0.18));
+  color: #854d0e;
+}
+[data-theme="dark"] .csp-topic-badge--auto {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.3), rgba(202, 138, 4, 0.2));
+  color: #fde047;
+}
+
 [data-theme="dark"] .tmb-topic { background: rgba(255, 255, 255, 0.04); border-left-color: rgba(167, 139, 250, 0.3); }
 [data-theme="dark"] .tmb-topic--current { background: linear-gradient(135deg, rgba(133, 77, 14, 0.25), rgba(202, 138, 4, 0.15)); border-left-color: #fbbf24; }
 

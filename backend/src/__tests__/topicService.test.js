@@ -7,6 +7,7 @@ import {
   resolveTopicsForOffsets,
   annotateSpikesWithTopics
 } from '../services/topicService.js'
+import { extractTopicProxy } from '../services/topicGenerator.js'
 import { TopicMarker } from '../models/index.js'
 import { DoubtSignal } from '../models/index.js'
 import { Room } from '../models/index.js'
@@ -201,5 +202,34 @@ describe('annotateSpikesWithTopics', () => {
   it('handles empty spikes array', async () => {
     const annotated = await annotateSpikesWithTopics({ roomId: room._id, spikes: [] })
     expect(annotated).toEqual([])
+  })
+})
+
+describe('extractTopicProxy (heuristic)', () => {
+  it('extracts proper-noun bigram', () => {
+    const label = extractTopicProxy('Today we will discuss the Krebs cycle and how it produces NADH.')
+    expect(label).toBe('Krebs cycle')
+  })
+
+  it('returns empty for empty input', () => {
+    expect(extractTopicProxy('')).toBe('')
+    expect(extractTopicProxy(null)).toBe('')
+  })
+
+  it('handles a single capitalized phrase', () => {
+    const label = extractTopicProxy('Let me explain Photosynthesis now.')
+    expect(label).toContain('Photosynthesis')
+  })
+
+  it('strips stage directions before extracting', () => {
+    const label = extractTopicProxy('[applause] Now Calvin cycle fixes carbon.')
+    expect(label).toBe('Calvin cycle')
+  })
+
+  it('falls back to first words when nothing capitalized', () => {
+    const label = extractTopicProxy('um so the investment phase uses atp to phosphorylate glucose.')
+    // No capitalized noun -> fall back; might be first sentence or single-word strategy
+    expect(typeof label).toBe('string')
+    expect(label.length).toBeGreaterThan(0)
   })
 })
