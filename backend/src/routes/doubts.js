@@ -9,8 +9,14 @@ import {
   startRoomSession,
   getRoomSession,
   getSpikeDetails,
-  getSignalsForRoom
+  getSignalsForRoom,
+  hashStudent
 } from '../services/doubtService.js'
+import {
+  attachSignalToEvent,
+  formatForClient
+} from '../services/confusionEventService.js'
+import { ensureRoomSalt } from '../services/doubtService.js'
 
 const router = express.Router()
 
@@ -73,6 +79,40 @@ router.post('/', authenticate, async (req, res) => {
         utteranceSnapshot: result.signal.utteranceSnapshot || '',
         timestamp: Date.now()
       })
+
+      // ── NEW: attach signal to the active ConfusionEvent for this room/topic
+      // and broadcast `confusion:update` so the teacher dashboard re-renders
+      // the single live alert card (instead of one row per tap).
+      try {
+        const salt = await ensureRoomSalt(roomId)
+        const studentHash = salt ? hashStudent(req.user._id, salt) : null
+        if (studentHash) {
+          const { event, action, closedPrior } = await attachSignalToEvent({
+            roomId,
+            signalId: result.signal._id,
+            studentHash,
+            recordingOffsetMs: result.signal.recordingOffsetMs,
+            utteranceSnapshot: result.signal.utteranceSnapshot || ''
+          })
+          if (action === 'merged' || action === 'created') {
+            io.to(room.code).emit('confusion:update', {
+              roomId: String(roomId),
+              action,           // 'created' | 'merged'
+              event: formatForClient(event)
+            })
+          }
+          if (closedPrior) {
+            io.to(room.code).emit('confusion:closed', {
+              roomId: String(roomId),
+              reason: 'topic_changed',
+              event: formatForClient(closedPrior)
+            })
+          }
+        }
+      } catch (attachErr) {
+        // Don't fail the doubt on attach errors -- the signal is already saved.
+        console.error('[doubts] attachToEvent error:', attachErr)
+      }
     }
 
     res.json({ success: true, signal: { id: result.signal._id } })

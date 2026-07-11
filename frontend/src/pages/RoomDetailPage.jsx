@@ -14,6 +14,7 @@ import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import ConfusionSpikePanel from '../components/ConfusionSpikePanel'
+import ConfusionAlertCard from '../components/ConfusionAlertCard'
 import TopicMarkerBar from '../components/TopicMarkerBar'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
@@ -1658,6 +1659,9 @@ function RoomDetailPage() {
       {/* Contextual Doubt-Anchored Polling: live confusion signals for the teacher */}
       {room?._id && (
         <div style={{ padding: '0 32px 24px', maxWidth: '420px', marginLeft: 'auto' }}>
+          {/* NEW: Topic-Aware Confusion -- single live card per topic */}
+          <ConfusionAlertCard roomId={room._id} />
+          {/* Legacy per-spike panel -- still useful for timeline+chart drill-down */}
           <ConfusionSpikePanel roomId={room._id} roomCode={room.code} />
           {/* Topic markers -- teacher sets "what we were on at this time" so spike cards show real topics */}
           <TopicMarkerBar roomId={room._id} roomCode={room.code} editable />

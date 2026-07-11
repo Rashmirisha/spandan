@@ -17,6 +17,7 @@ import transcriptRoutes from './routes/transcripts.js'
 import responseRoutes from './routes/responses.js'
 import doubtRoutes from './routes/doubts.js'
 import topicRoutes from './routes/topics.js'
+import confusionRoutes from './routes/confusion.js'
 
 // Import models for reference
 import './models/index.js'
@@ -120,6 +121,7 @@ app.use('/api/transcripts', transcriptRoutes)
 app.use('/api/responses', responseRoutes)
 app.use('/api/doubts', doubtRoutes)
 app.use('/api/topics', topicRoutes)
+app.use('/api/confusion', confusionRoutes)
 
 // Health check
 app.get('/api/health', (req, res) => {

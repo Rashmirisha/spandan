@@ -125,3 +125,12 @@ export const topicApi = {
   remove: (roomId, markerId) => api.delete(`/topics/room/${roomId}/${markerId}`),
   list: (roomId) => api.get(`/topics/room/${roomId}`)
 }
+
+// Confusion events API -- one live alert per (room, topic).
+// Topic-Aware Confusion: replaces per-spike rows with a single card
+// that re-renders live as students keep pressing "I'm Lost".
+export const confusionApi = {
+  getActive: (roomId) => api.get(`/confusion/room/${roomId}/active`),
+  getLatest: (roomId) => api.get(`/confusion/room/${roomId}/latest`),
+  getHistory: (roomId, limit = 50) => api.get(`/confusion/room/${roomId}?limit=${limit}`)
+}

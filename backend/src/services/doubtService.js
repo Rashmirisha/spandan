@@ -8,7 +8,7 @@ import { annotateSpikesWithTopics } from './topicService.js'
  * Lazy-generated on first signal; rotated when the room ends so signals
  * cannot be linked across sessions.
  */
-async function ensureRoomSalt (roomId) {
+export async function ensureRoomSalt (roomId) {
   const room = await Room.findById(roomId).select('doubtSalt')
   if (!room) return null
   if (!room.doubtSalt) {
