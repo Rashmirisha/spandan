@@ -42,10 +42,15 @@ export function extractTopicProxy (text) {
 
   // Strategy 1: 2-grams (adjacent word pairs) anchored by a proper noun.
   // Look for "<ProperNoun> <ContentWord>" sequences (e.g. "Krebs cycle",
-  // "Calvin cycle"). A "proper noun" here means a capitalized word that is
-  // also at least 4 characters long (so we skip generic sentence starters
-  // like "Let", "Now", "Today"). The second word must be a lowercase
-  // content word >=4 chars.
+  // "Calvin cycle", "Binary Search"). A "proper noun" here means a
+  // capitalized word that is also at least 4 characters long (so we skip
+  // generic sentence starters like "Let", "Now", "Today"). The second word
+  // must be a content word >=4 chars and not a stopword.
+  //
+  // We score bigrams: pairs where BOTH words are proper nouns get a +2
+  // bonus (e.g. "Binary Search" beats "Search trees" because "Search trees"
+  // has a lowercase second word that has weaker noun signal). Pairs where
+  // only the first is a proper noun still count, but rank lower.
   const properNounPairs = []
   const capMatch = cleaned.match(/[A-Z][a-z][a-zA-Z'-]{2,}/g) || []
   const tokensWithPos = cleaned.match(/[A-Za-z][a-zA-Z'-]{2,}/g) || []
@@ -53,14 +58,21 @@ export function extractTopicProxy (text) {
     const a = tokensWithPos[i]
     const b = tokensWithPos[i + 1]
     // `a` must start with a capital AND be at least 4 chars (proper noun).
-    // `b` must NOT start with a capital (so we don't pick up "A B" pairs)
-    // AND must be at least 4 chars (so we skip "now", "to", "of").
     if (a.length < 4) continue
     if (!/^[A-Z]/.test(a)) continue
-    if (/^[A-Z]/.test(b)) continue  // reject "Now Calvin" -- both capitalized
+    // `b` must be at least 4 chars and not a stopword.
     if (b.length < 4) continue
     if (STOPWORDS.has(a.toLowerCase()) || STOPWORDS.has(b.toLowerCase())) continue
-    properNounPairs.push(`${a} ${b}`)
+    const bIsCap = /^[A-Z]/.test(b)
+    // Weight: 2 if both proper nouns ("Binary Search"), 1 if only first
+    // is a proper noun ("Binary Search" vs "Krebs cycle").
+    properNounPairs.push({ pair: `${a} ${b}`, weight: bIsCap ? 2 : 1 })
+  }
+  if (properNounPairs.length > 0) {
+    const counts = new Map()
+    for (const p of properNounPairs) counts.set(p.pair, (counts.get(p.pair) || 0) + p.weight)
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+    if (top) return top[0].slice(0, 60)
   }
   if (properNounPairs.length > 0) {
     const counts = new Map()
