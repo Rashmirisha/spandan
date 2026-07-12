@@ -51,7 +51,14 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
   useEffect(() => {
     fetchAll()
     const t = setInterval(fetchAll, 8000)
-    return () => clearInterval(t)
+    // Also refresh when the tab becomes visible again (handles the case
+    // where the teacher switched tabs and missed several socket events).
+    const onVisibility = () => { if (!document.hidden) fetchAll() }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [fetchAll])
 
   useEffect(() => {
