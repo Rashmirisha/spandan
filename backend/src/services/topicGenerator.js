@@ -21,6 +21,35 @@ const STOPWORDS = new Set([
   'people','person','place','time','way','year','day','number','problem','example'
 ])
 
+// Whisper noise tokens -- these appear in transcripts as artifacts from audio
+// recognition. Words like "[BLANK_AUDIO]", "(laughs)", "*sigh*" produce
+// capitalized tokens that look like proper nouns but aren't real content.
+// Strip them BEFORE doing any topic scoring.
+const NOISE_TOKENS = new Set([
+  'BLANK_AUDIO', 'SILENCE', 'NO_SPEECH', 'INAUDIBLE', 'BACKGROUND', 'NOISE',
+  'Music', 'Background', 'Silence', 'Silence', 'Sound', 'Audio', 'Voice',
+  'Sigh', 'Laugh', 'Laughs', 'Laughter', 'Cough', 'Coughs', 'Sneeze', 'Sniff',
+  'Snoring', 'Breathing', 'Whistling', 'Clicking', 'Typing', 'Keyboard',
+  'Wind', 'Birds', 'Barking', 'Dog', 'Cat', 'Music', 'Applause', 'Clapping',
+  'Crying', 'Sobbing', 'Yawning', 'Sigh', 'Sighs', 'Gasp', 'Gasps', 'Moan',
+  'Moans', 'Scream', 'Screams', 'Shout', 'Shouts', 'Whisper', 'Whispers',
+  'Mumbles', 'Mumble', 'Mumbling', 'Stuttering', 'Stutter', 'Stutters',
+  'Hm', 'Hmm', 'Ugh', 'Ahh', 'Ooh', 'Ehh', 'Hmph'
+])
+
+function stripNoise (text) {
+  return text
+    // [BLANK_AUDIO], [Music], (laughs), *sigh* all go
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\*[^*]*\*/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    // Repeated words like "I am locked. I am locked. I am locked." collapse
+    .replace(/\b(\w+(?:\s+\w+){0,3})\.?\s+(?:\1\.?\s*){1,}/gi, ' ')
+    // Collapse whitespace
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 /**
  * Local heuristic: extract a short topic label from a transcript chunk.
  * Tries multiple strategies in order:
@@ -30,15 +59,27 @@ const STOPWORDS = new Set([
  */
 export function extractTopicProxy (text) {
   if (!text || typeof text !== 'string') return ''
-  const cleaned = text
-    .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const cleaned = stripNoise(text)
   if (!cleaned) return ''
 
-  const tokens = cleaned.toLowerCase().match(/[a-z][a-z'-]{2,}/g) || []
+  // Drop tokens that are recognized Whisper noise. Keep only content words
+  // that are either lowercase English (>=3 chars) or capitalized proper nouns
+  // that aren't in the noise list.
+  const tokens = []
+  const allTokens = cleaned.match(/[A-Za-z][a-zA-Z'-]{2,}/g) || []
+  for (const t of allTokens) {
+    if (NOISE_TOKENS.has(t)) continue
+    if (NOISE_TOKENS.has(t.toLowerCase())) continue
+    // Reject single-letter and very common short words left over
+    if (t.length < 4 && !/^[A-Z]/.test(t)) continue
+    tokens.push(t)
+  }
   if (tokens.length === 0) return ''
+
+  // Require at least 2 distinguishable content tokens for any topic label.
+  // A single stray word like "Love" alone is noise -- we need a phrase.
+  const uniqueLower = new Set(tokens.map(t => t.toLowerCase()))
+  if (uniqueLower.size < 2) return ''
 
   // Strategy 1: 2-grams (adjacent word pairs) anchored by a proper noun.
   // Look for "<ProperNoun> <ContentWord>" sequences (e.g. "Krebs cycle",
@@ -64,6 +105,8 @@ export function extractTopicProxy (text) {
     if (b.length < 4) continue
     if (STOPWORDS.has(a.toLowerCase()) || STOPWORDS.has(b.toLowerCase())) continue
     const bIsCap = /^[A-Z]/.test(b)
+    // Skip noise tokens that whisper inserts (e.g. "(sigh)" produces "Sigh").
+    if (NOISE_TOKENS.has(a) || NOISE_TOKENS.has(b)) continue
     // Weight: 2 if both proper nouns ("Binary Search"), 1 if only first
     // is a proper noun ("Binary Search" vs "Krebs cycle").
     properNounPairs.push({ pair: `${a} ${b}`, weight: bIsCap ? 2 : 1 })
@@ -74,18 +117,14 @@ export function extractTopicProxy (text) {
     const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
     if (top) return top[0].slice(0, 60)
   }
-  if (properNounPairs.length > 0) {
-    const counts = new Map()
-    for (const p of properNounPairs) counts.set(p, (counts.get(p) || 0) + 1)
-    const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
-    if (top) return top[0].slice(0, 60)
-  }
 
-  // Strategy 2: single-word frequency
+  // Strategy 2: single-word frequency. Require at least 2 distinct content
+  // words for a multi-word label; a single isolated word is too noisy.
   const wordFreq = new Map()
   for (const t of tokens) {
-    if (STOPWORDS.has(t)) continue
+    if (STOPWORDS.has(t.toLowerCase())) continue
     if (t.length < 4) continue
+    if (NOISE_TOKENS.has(t) || NOISE_TOKENS.has(t.toLowerCase())) continue
     wordFreq.set(t, (wordFreq.get(t) || 0) + 1)
   }
   const capWords = new Set(capMatch.map(c => c.toLowerCase()))
@@ -97,7 +136,7 @@ export function extractTopicProxy (text) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
     .map(([w]) => w)
-  if (top.length > 0) {
+  if (top.length >= 2) {
     return top.map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w).join(' ').slice(0, 60)
   }
 
