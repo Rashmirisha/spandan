@@ -114,15 +114,27 @@ export function scoreEvent ({
  * @param {object[]} events - ConfusionEvent-like objects with topic.label + score
  * @param {number} [topN=10]
  */
-export function buildTopicHeat (events, topN = 10) {
+export function buildTopicHeat (events, topN = 10, nowMs = Date.now()) {
   const buckets = new Map()
   for (const e of events || []) {
-    const label = e.topic?.label || e.topicLabel || '(no topic)'
-    const key = label.toLowerCase().trim() || '__none__'
+    const topicLabel = e.topic?.label || e.topicLabel || '(no topic)'
+    const topicSource = e.topic?.source || e.topicSource || 'none'
+    const key = (topicLabel || '(no topic)').toLowerCase().trim() || '__none__'
+    // Compute score on the fly -- events in DB don't store score,
+    // so reading e.score is always 0. We must call scoreEvent.
+    const startTs = e.startTimestamp ? new Date(e.startTimestamp).getTime() : null
+    const lastTs = e.lastUpdateAt ? new Date(e.lastUpdateAt).getTime() : (e.latestTimestamp ? new Date(e.latestTimestamp).getTime() : null)
+    const { score } = scoreEvent({
+      confusedStudentCount: e.confusedStudentCount || 0,
+      startTimestamp: startTs,
+      latestTimestamp: lastTs,
+      topicSource,
+      nowMs
+    })
     if (!buckets.has(key)) {
       buckets.set(key, {
-        topicLabel: label,
-        topicSource: e.topic?.source || e.topicSource || 'none',
+        topicLabel,
+        topicSource,
         eventCount: 0,
         studentCount: 0,
         totalScore: 0,
@@ -132,8 +144,8 @@ export function buildTopicHeat (events, topN = 10) {
     const b = buckets.get(key)
     b.eventCount += 1
     b.studentCount += e.confusedStudentCount || 0
-    b.totalScore += e.score || 0
-    if ((e.score || 0) > b.maxScore) b.maxScore = e.score || 0
+    b.totalScore += score
+    if (score > b.maxScore) b.maxScore = score
   }
   const arr = [...buckets.values()].map(b => ({
     ...b,
@@ -157,33 +169,50 @@ export function buildTopicHeat (events, topN = 10) {
  * @param {number} args.classEndMs - recording end / now
  * @param {number} args.bucketCount - how many time buckets (default 12)
  */
-export function buildHeatmap ({
-  starts, lasts, scores, classStartMs, classEndMs, bucketCount = 12
-}) {
+export function buildHeatmap (events, { bucketMs = 60000, windowMs = 600000, nowMs = Date.now() } = {}) {
+  // Anchor the heatmap to room start (so bucket 0 = class start), or
+  // fallback to (now - windowMs) so we always render something sensible.
+  const timestamps = (events || [])
+    .map(e => e.startTimestamp ? new Date(e.startTimestamp).getTime() : null)
+    .filter(t => t != null)
+  const earliestStart = timestamps.length ? Math.min(...timestamps) : (nowMs - windowMs)
+  const classStartMs = Math.min(earliestStart, nowMs - windowMs)
+  const classEndMs = Math.max(nowMs, ...timestamps.map(t => t + windowMs / 2))
   if (!classStartMs || !classEndMs || classEndMs <= classStartMs) {
     return { buckets: [], maxScore: 0 }
   }
   const span = classEndMs - classStartMs
-  const bucketMs = span / bucketCount
+  // honor the requested bucketMs (capped by span)
+  const effectiveBucketMs = Math.max(1000, Math.min(bucketMs, Math.max(span / 12, 1)))
+  const bucketCount = Math.max(1, Math.ceil(span / effectiveBucketMs))
   const buckets = Array.from({ length: bucketCount }, (_, i) => ({
     index: i,
-    startMs: classStartMs + i * bucketMs,
-    endMs: classStartMs + (i + 1) * bucketMs,
+    startMs: classStartMs + i * effectiveBucketMs,
+    endMs: classStartMs + (i + 1) * effectiveBucketMs,
     intensity: 0,
     eventCount: 0
   }))
 
-  for (let i = 0; i < starts.length; i++) {
-    const s = starts[i]
-    const e = lasts[i] || s
-    const sc = scores[i] || 0
-    if (s == null || e < s) continue
+  for (const e of events || []) {
+    if (!e.startTimestamp) continue
+    const s = new Date(e.startTimestamp).getTime()
+    const lastTs = e.lastUpdateAt ? new Date(e.lastUpdateAt).getTime() : (e.latestTimestamp ? new Date(e.latestTimestamp).getTime() : null)
+    const last = lastTs || s
+    const topicSource = e.topic?.source || e.topicSource || 'none'
+    const { score } = scoreEvent({
+      confusedStudentCount: e.confusedStudentCount || 0,
+      startTimestamp: s,
+      latestTimestamp: last,
+      topicSource,
+      nowMs
+    })
+    if (s == null || last < s) continue
     for (const b of buckets) {
       const overlapStart = Math.max(b.startMs, s)
-      const overlapEnd = Math.min(b.endMs, e)
+      const overlapEnd = Math.min(b.endMs, last)
       if (overlapEnd > overlapStart) {
-        const fraction = (overlapEnd - overlapStart) / (e - s)
-        b.intensity += sc * fraction
+        const fraction = (overlapEnd - overlapStart) / Math.max(1, (last - s))
+        b.intensity += score * fraction
         if (overlapStart === s) b.eventCount += 1
       }
     }
@@ -194,7 +223,7 @@ export function buildHeatmap ({
     b.intensity = round1(b.intensity)
     if (b.intensity > maxScore) maxScore = b.intensity
   }
-  return { buckets, maxScore }
+  return { buckets, maxScore, bucketMs: effectiveBucketMs, spanMs: span }
 }
 
 /**
