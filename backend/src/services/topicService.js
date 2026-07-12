@@ -137,6 +137,27 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
     }
   }
 
+  // 1b. SOFT FALLBACK: if no marker covers the offset but markers exist for
+  // the room, return the most recent marker that started <= offset. This
+  // handles the common case of students joining AFTER the teacher has moved
+  // past a marker (offset past endMs) -- the current topic is still whatever
+  // the teacher last said.
+  const lastMarker = await TopicMarker.findOne({
+    roomId,
+    startMs: { $lte: recordingOffsetMs }
+  }).sort({ startMs: -1 }).lean()
+
+  if (lastMarker) {
+    return {
+      label: lastMarker.label,
+      note: lastMarker.note || '',
+      source: 'latest_marker',
+      markerId: lastMarker._id,
+      startMs: lastMarker.startMs,
+      endMs: lastMarker.endMs
+    }
+  }
+
   // 2. Fallback: closest preceding Transcript within ±15s.
   // Transcripts are anchored to recordingOffsetMs = (createdAt - roomStartedAt)
   let transcripts
@@ -170,6 +191,23 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
     }
   }
 
+  // 2b. SOFT FALLBACK: if no transcript is in the ±15s window but the room
+  // has transcripts, use the most recent one. Same reasoning as 1b -- the
+  // teacher was talking about SOMETHING and we should attribute it to
+  // SOMETHING rather than empty.
+  const lastTranscript = await Transcript.findOne({ roomId })
+    .sort({ segmentIndex: -1, createdAt: -1 })
+    .lean()
+
+  if (lastTranscript) {
+    return {
+      label: extractTopicProxy(lastTranscript.text),
+      note: '',
+      source: 'latest_transcript',
+      markerId: null
+    }
+  }
+
   return { label: '', source: 'none' }
 }
 
@@ -182,12 +220,17 @@ export async function resolveTopicsForOffsets ({ roomId, offsets }) {
     return new Map(offsets.map(o => [o, { label: '', source: 'none' }]))
   }
   const markers = await TopicMarker.find({ roomId }).sort({ startMs: 1 }).lean()
+  // Compute the most recent preceding marker (regardless of endMs) once.
+  const lastMarker = markers.length ? markers[markers.length - 1] : null
   const out = new Map()
   // For each offset, walk markers in order
   for (const offset of offsets) {
     const m = markers.find(mk => mk.startMs <= offset && (mk.endMs == null || mk.endMs > offset))
     if (m) {
       out.set(offset, { label: m.label, note: m.note || '', source: 'marker', markerId: m._id })
+    } else if (lastMarker && lastMarker.startMs <= offset) {
+      // Soft fallback: use the most recent preceding marker (covers past-endMs case)
+      out.set(offset, { label: lastMarker.label, note: lastMarker.note || '', source: 'latest_marker', markerId: lastMarker._id })
     } else {
       out.set(offset, { label: '', source: 'none' })
     }

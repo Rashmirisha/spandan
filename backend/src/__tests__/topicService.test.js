@@ -152,6 +152,7 @@ describe('resolveTopicForOffset', () => {
   })
 
   it('falls back to transcript when no marker covers', async () => {
+    await TopicMarker.deleteMany({ roomId: room._id })
     await Transcript.create({
       roomId: room._id,
       segmentIndex: 0,
@@ -160,10 +161,52 @@ describe('resolveTopicForOffset', () => {
     })
     const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 999000, roomStartedAt: null })
     expect(r.source).toBe('transcript')
-    expect(r.label).toContain('cellular')
+    expect(r.label.toLowerCase()).toContain('cellular')
+  })
+
+  it('falls back to latest marker when offset is past the last closed marker', async () => {
+    // Delete all markers then add 2 closed ones (Phase 2 from beforeEach isn't here -- this it()
+    // runs after the previous it() that may have deleted markers).
+    await TopicMarker.deleteMany({ roomId: room._id })
+    await setTopic({ roomId: room._id, teacherId: teacher._id, startMs: 0, endMs: 60000, label: 'Intro' })
+    await setTopic({ roomId: room._id, teacherId: teacher._id, startMs: 60000, endMs: 120000, label: 'Phase 1' })
+    const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 999000 })
+    expect(r.source).toBe('latest_marker')
+    expect(r.label).toBe('Phase 1')
+  })
+
+  it('returns latest_marker when offset is past the last closed marker (latest_marker fallback)', async () => {
+    // Drop the open-ended Phase 2 marker so all markers are closed.
+    await TopicMarker.deleteOne({ roomId: room._id, startMs: 120000 })
+    const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 999000 })
+    expect(r.source).toBe('latest_marker')
+    expect(r.label).toBe('Phase 1')
+  })
+
+  it('returns latest_transcript when no marker covers and no transcript in window', async () => {
+    await TopicMarker.deleteMany({ roomId: room._id })
+    await Transcript.deleteMany({ roomId: room._id })
+    // Create a transcript whose createdAt is FAR from roomStartedAt + offset,
+    // so the ±15s window misses it. roomStartedAt is set in makeRoom() to (now - 600000).
+    await Transcript.create({
+      roomId: room._id,
+      segmentIndex: 0,
+      teacherId: teacher._id,
+      text: 'This is about mitochondrial metabolism and ATP synthesis.',
+      createdAt: new Date(Date.now() - 60000) // way before now
+    })
+    const r = await resolveTopicForOffset({
+      roomId: room._id,
+      recordingOffsetMs: 0,
+      roomStartedAt: new Date() // offset 0 maps to "now", transcript createdAt is 60s ago
+    })
+    expect(r.source).toBe('latest_transcript')
+    expect(r.label.toLowerCase()).toContain('mitochondrial')
   })
 
   it('returns none when no marker and no transcript', async () => {
+    await TopicMarker.deleteMany({ roomId: room._id })
+    await Transcript.deleteMany({ roomId: room._id })
     const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 999000 })
     expect(r.source).toBe('none')
     expect(r.label).toBe('')
@@ -180,7 +223,7 @@ describe('resolveTopicsForOffsets (batch)', () => {
     const r = await resolveTopicsForOffsets({ roomId: room._id, offsets: [30000, 90000, 200000] })
     expect(r.get(30000).label).toBe('Intro')
     expect(r.get(90000).label).toBe('Phase 1')
-    expect(r.get(200000).source).toBe('none')
+    expect(r.get(200000).source).toBe('latest_marker')
   })
 })
 
@@ -196,7 +239,7 @@ describe('annotateSpikesWithTopics', () => {
     const annotated = await annotateSpikesWithTopics({ roomId: room._id, spikes })
     expect(annotated[0].topic.label).toBe('Intro')
     expect(annotated[1].topic.label).toBe('Phase 1')
-    expect(annotated[2].topic.label).toBe('')
+    expect(annotated[2].topic.label).toBe('Phase 1') // latest_marker fallback (offset past endMs)
   })
 
   it('handles empty spikes array', async () => {
