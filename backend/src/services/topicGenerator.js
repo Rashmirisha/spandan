@@ -220,22 +220,28 @@ export async function maybeGenerateAutoTopic ({
   lastAutoTopic,       // { label, startMs } | null
   nowMs                // current recordingOffsetMs
 }) {
+  const _skip = (reason) => {
+    console.log(`[auto-topic] skip room=${roomId} reason="${reason}"`)
+    return { createNew: false, reason }
+  }
   if (!recentTranscripts || recentTranscripts.length === 0) {
-    return { createNew: false }
+    return _skip('no recent transcripts')
   }
 
   // Concatenate recent text (last ~90 seconds of speech)
   const sorted = [...recentTranscripts].sort((a, b) => a.recordingOffsetMs - b.recordingOffsetMs)
   const recent = sorted.filter(t => nowMs - t.recordingOffsetMs < 90000)
-  if (recent.length === 0) return { createNew: false }
+  if (recent.length === 0) return _skip('no transcripts within 90s window')
 
   const text = recent.map(t => t.text).join(' ').trim()
-  if (text.length < 60) return { createNew: false }
+  if (text.length < 60) return _skip(`text too short (${text.length} < 60 chars)`)
 
   // If we have a recent auto topic that just started, skip
   if (lastAutoTopic && nowMs - lastAutoTopic.startMs < 60000) {
-    return { createNew: false }
+    return _skip(`recent auto topic "${lastAutoTopic.label}" is <60s old`)
   }
+
+  console.log(`[auto-topic] evaluating room=${roomId} textLen=${text.length} prevLabel="${lastAutoTopic?.label || '(none)'}"`)
 
   // If last auto topic is over 5min old and text has accumulated substantially,
   // try to detect shift via AI first; fall back to heuristic.
@@ -243,20 +249,25 @@ export async function maybeGenerateAutoTopic ({
   const aiResult = await detectTopicShift({ recentText: text, previousTopic: previousLabel })
 
   if (aiResult) {
-    if (!aiResult.changed) return { createNew: false }
+    if (!aiResult.changed) {
+      console.log(`[auto-topic] skip room=${roomId} reason="AI says no topic shift (label="${aiResult.label}")"`)
+      return { createNew: false, reason: 'ai_no_shift' }
+    }
+    console.log(`[auto-topic] NEW room=${roomId} label="${aiResult.label}" via=ai conf=${aiResult.confidence}`)
     return { createNew: true, label: aiResult.label, confidence: aiResult.confidence, source: 'auto' }
   }
 
   // Fallback: heuristic extraction
   const heuristicLabel = extractTopicProxy(text)
-  if (!heuristicLabel) return { createNew: false }
+  if (!heuristicLabel) return _skip('heuristic returned empty (insufficient content tokens)')
 
   // If heuristic gives the same words as the last topic, skip
   if (previousLabel) {
     const prev = previousLabel.toLowerCase().split(/\s+/).filter(w => w.length > 3).join(' ')
     const next = heuristicLabel.toLowerCase().split(/\s+/).filter(w => w.length > 3).join(' ')
-    if (prev === next) return { createNew: false }
+    if (prev === next) return _skip(`heuristic label same as last ("${heuristicLabel}")`)
   }
 
+  console.log(`[auto-topic] NEW room=${roomId} label="${heuristicLabel}" via=heuristic`)
   return { createNew: true, label: heuristicLabel, confidence: 0.4, source: 'auto' }
 }
