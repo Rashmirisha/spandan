@@ -259,6 +259,7 @@ function sourceToLabel (source) {
     case 'latest_marker': return 'Recent'
     case 'latest_transcript': return 'Snippet'
     case 'student_utterance': return 'Student'
+    case 'fallback': return 'General'
     case 'none': return 'No topic'
     default: return ''
   }
@@ -272,6 +273,7 @@ function sourceToClass (source) {
     case 'latest_marker': return 'cac-source-badge--marker'
     case 'latest_transcript': return 'cac-source-badge--transcript'
     case 'student_utterance': return 'cac-source-badge--student'
+    case 'fallback': return 'cac-source-badge--fallback'
     case 'none': return 'cac-source-badge--none'
     default: return ''
   }

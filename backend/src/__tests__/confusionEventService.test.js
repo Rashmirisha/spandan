@@ -178,7 +178,9 @@ describe('attachSignalToEvent', () => {
     expect(r.closedPrior).toBeTruthy()
   })
 
-  it('treats empty labels as a separate bucket (no accidental merge)', async () => {
+  it('merges empty-label events when no utterance is available (both get the fallback label)', async () => {
+    // Two students tap with no marker, no transcript, no utterance.
+    // Both events get the hard fallback "General confusion" label and SHOULD merge.
     await attachSignalToEvent({
       roomId: FAKE_ROOM_ID,
       signalId: new mongoose.Types.ObjectId().toString(),
@@ -191,8 +193,10 @@ describe('attachSignalToEvent', () => {
       studentHash: 'b'.repeat(64),
       topicContext: { label: '', source: 'none', markerId: null }
     })
-    expect(r.action).toBe('created')
-    expect(r.event.confusedStudentCount).toBe(1)
+    expect(r.action).toBe('merged')
+    expect(r.event.confusedStudentCount).toBe(2)
+    expect(r.event.topicLabel).toBe('General confusion')
+    expect(r.event.topicSource).toBe('fallback')
   })
 
   it('keeps the latest transcript snippet (does not overwrite with empty)', async () => {

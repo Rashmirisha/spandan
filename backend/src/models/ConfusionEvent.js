@@ -40,7 +40,7 @@ const confusionEventSchema = new mongoose.Schema({
   },
   topicSource: {
     type: String,
-    enum: ['marker', 'auto', 'transcript', 'latest_marker', 'latest_transcript', 'student_utterance', 'none'],
+    enum: ['marker', 'auto', 'transcript', 'latest_marker', 'latest_transcript', 'student_utterance', 'fallback', 'none'],
     default: 'none'
   },
   // Anchor wall-clock ms when the first signal arrived

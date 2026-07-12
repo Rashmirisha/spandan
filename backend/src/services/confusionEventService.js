@@ -145,16 +145,22 @@ export async function attachSignalToEvent ({
   // This handles the common cold-start case: student taps "I'm Lost" before
   // the teacher has produced any transcript or marker, and the only signal
   // we have is the student's own description of what they're lost on.
-  if (!topicLabel && utteranceSnapshot && typeof utteranceSnapshot === 'string') {
-    const ut = utteranceSnapshot.trim()
-    if (ut.length > 0) {
-      const { extractTopicProxy } = await import('./topicGenerator.js')
-      const studentTopic = extractTopicProxy(ut)
-      if (studentTopic) {
-        topicLabel = studentTopic
-        topicSource = 'student_utterance'
-      }
+  const ut = (typeof utteranceSnapshot === 'string' ? utteranceSnapshot : '').trim()
+  if (!topicLabel && ut.length > 0) {
+    const { extractTopicProxy } = await import('./topicGenerator.js')
+    const studentTopic = extractTopicProxy(ut)
+    if (studentTopic) {
+      topicLabel = studentTopic
+      topicSource = 'student_utterance'
     }
+  }
+
+  // Final hard fallback: even if we have no utterance, NEVER create an
+  // event with an empty topicLabel. Use a sensible default so the teacher
+  // dashboard has SOMETHING to display.
+  if (!topicLabel) {
+    topicLabel = 'General confusion'
+    if (topicSource === 'none') topicSource = 'fallback'
   }
 
   // Look up the currently active event for this room
