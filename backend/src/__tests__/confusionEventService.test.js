@@ -213,6 +213,42 @@ describe('attachSignalToEvent', () => {
     expect(r.event.latestTranscriptSnippet).toContain('Photosynthesis')
   })
 
+  it('falls back to student utterance when no marker and no transcript', async () => {
+    // No markers, no transcripts in DB -- only the student's utterance.
+    const r = await attachSignalToEvent({
+      roomId: FAKE_ROOM_ID,
+      signalId: new mongoose.Types.ObjectId().toString(),
+      studentHash: 'c'.repeat(64),
+      recordingOffsetMs: 0,
+      utteranceSnapshot: 'I am confused about the Krebs cycle'
+    })
+    expect(r.action).toBe('created')
+    expect(r.event.topicLabel.toLowerCase()).toContain('krebs')
+    expect(r.event.topicSource).toBe('student_utterance')
+  })
+
+  it('prefers marker over student utterance when both exist', async () => {
+    const TopicMarker = (await import('../models/TopicMarker.js')).default
+    await TopicMarker.create({
+      roomId: new mongoose.Types.ObjectId(FAKE_ROOM_ID),
+      teacherId: new mongoose.Types.ObjectId(),
+      startMs: 0,
+      endMs: 60000,
+      label: 'Glycolysis -- Investment Phase',
+      source: 'manual'
+    })
+    const r = await attachSignalToEvent({
+      roomId: FAKE_ROOM_ID,
+      signalId: new mongoose.Types.ObjectId().toString(),
+      studentHash: 'd'.repeat(64),
+      recordingOffsetMs: 5000,
+      utteranceSnapshot: 'I am confused about the Krebs cycle'
+    })
+    expect(r.action).toBe('created')
+    expect(r.event.topicLabel).toBe('Glycolysis -- Investment Phase')
+    expect(r.event.topicSource).toBe('marker')
+  })
+
   it('returns noop for invalid input', async () => {
     const r1 = await attachSignalToEvent({ roomId: 'not-an-oid', signalId: 'nope', studentHash: 'a'.repeat(64) })
     expect(r1.action).toBe('noop')

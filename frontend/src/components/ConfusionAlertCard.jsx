@@ -256,6 +256,9 @@ function sourceToLabel (source) {
     case 'marker': return 'Teacher'
     case 'auto': return 'AI'
     case 'transcript': return 'Snippet'
+    case 'latest_marker': return 'Recent'
+    case 'latest_transcript': return 'Snippet'
+    case 'student_utterance': return 'Student'
     case 'none': return 'No topic'
     default: return ''
   }
@@ -266,6 +269,9 @@ function sourceToClass (source) {
     case 'marker': return 'cac-source-badge--marker'
     case 'auto': return 'cac-source-badge--auto'
     case 'transcript': return 'cac-source-badge--transcript'
+    case 'latest_marker': return 'cac-source-badge--marker'
+    case 'latest_transcript': return 'cac-source-badge--transcript'
+    case 'student_utterance': return 'cac-source-badge--student'
     case 'none': return 'cac-source-badge--none'
     default: return ''
   }

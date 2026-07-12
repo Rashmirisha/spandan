@@ -135,10 +135,27 @@ export async function attachSignalToEvent ({
   if (!topic) {
     topic = await resolveTopicForOffset({ roomId, recordingOffsetMs: recordingOffsetMs || 0 })
   }
-  const topicLabel = (topic.label || '').trim()
-  const topicSubtopic = (topic.note || '').trim()
-  const topicSource = topic.source || 'none'
+  let topicLabel = (topic.label || '').trim()
+  let topicSubtopic = (topic.note || '').trim()
+  let topicSource = topic.source || 'none'
   const topicMarkerId = topic.markerId || null
+
+  // Last-resort fallback: if we still don't have a topic AND the student
+  // typed something in the utterance, extract a topic from their words.
+  // This handles the common cold-start case: student taps "I'm Lost" before
+  // the teacher has produced any transcript or marker, and the only signal
+  // we have is the student's own description of what they're lost on.
+  if (!topicLabel && utteranceSnapshot && typeof utteranceSnapshot === 'string') {
+    const ut = utteranceSnapshot.trim()
+    if (ut.length > 0) {
+      const { extractTopicProxy } = await import('./topicGenerator.js')
+      const studentTopic = extractTopicProxy(ut)
+      if (studentTopic) {
+        topicLabel = studentTopic
+        topicSource = 'student_utterance'
+      }
+    }
+  }
 
   // Look up the currently active event for this room
   const active = await getActiveForRoom(roomId)
