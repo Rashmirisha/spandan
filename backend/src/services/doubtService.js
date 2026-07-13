@@ -180,6 +180,87 @@ export async function getDoubtCountsBySegment (roomId) {
 }
 
 /**
+ * Shared broadcast step used by BOTH the HTTP POST /api/doubts route and the
+ * Socket.IO 'doubt:signal' handler. After recordDoubt() has saved the signal,
+ * both entry points do exactly the same thing:
+ *   1) emit `doubt:new` to the room audience (raw per-segment count, legacy UI)
+ *   2) attach the signal to the active ConfusionEvent for this room/topic and
+ *      emit `confusion:update` (created|merged) so the teacher dashboard's
+ *      live alert card re-renders.
+ *   3) if attaching this signal caused a prior same-topic event to close
+ *      (e.g. topic changed), emit `confusion:closed` for that prior event.
+ *
+ * Caller-specific acks (HTTP 200 / socket 'doubt:confirmed') are NOT done
+ * here — the HTTP route and socket handler each ack their own caller.
+ *
+ * Errors from attachSignalToEvent are swallowed (logged) so a doubt signal
+ * is never lost because of an analytics hiccup.
+ *
+ * @param {object} args
+ * @param {import('socket.io').Server} args.io           Socket.IO server
+ * @param {{_id:any,code:string}}       args.room        already-loaded Room doc (must have `code`)
+ * @param {string}                       args.userId      ObjectId-like of the signaling student
+ * @param {object}                       args.payload     Original payload from the caller
+ *   - segmentIndex, transcriptOffsetMs, recordingOffsetMs, utteranceSnapshot
+ * @param {object}                       args.signal      The saved DoubtSignal doc from recordDoubt()
+ */
+export async function broadcastRecordedDoubt ({ io, room, userId, payload, signal }) {
+  if (!io || !room || !room.code) return
+  const roomCode = room.code
+  const roomId = room._id
+  const segmentIndex = (payload && payload.segmentIndex) || 0
+
+  // (1) legacy per-segment raw count broadcast
+  try {
+    const counts = await getDoubtCountsBySegment(roomId)
+    const segCount = counts.find(c => c.segmentIndex === segmentIndex)?.count || 1
+    io.to(roomCode).emit('doubt:new', {
+      roomId: String(roomId),
+      segmentIndex,
+      count: segCount,
+      recordingOffsetMs: signal.recordingOffsetMs,
+      recordingOffsetLabel: signal.recordingOffsetLabel,
+      utteranceSnapshot: signal.utteranceSnapshot || '',
+      timestamp: Date.now()
+    })
+  } catch (e) {
+    console.error('[broadcastRecordedDoubt] doubt:new emit failed:', e)
+  }
+
+  // (2) + (3) live ConfusionEvent attach + broadcasts
+  try {
+    const salt = await ensureRoomSalt(roomId)
+    const studentHash = salt ? hashStudent(userId, salt) : null
+    if (!studentHash) return
+    const { attachSignalToEvent, formatForClient } = await import('./confusionEventService.js')
+    const { event, action, closedPrior } = await attachSignalToEvent({
+      roomId,
+      signalId: signal._id,
+      studentHash,
+      recordingOffsetMs: signal.recordingOffsetMs,
+      utteranceSnapshot: signal.utteranceSnapshot || ''
+    })
+    if (action === 'merged' || action === 'created') {
+      io.to(roomCode).emit('confusion:update', {
+        roomId: String(roomId),
+        action,
+        event: formatForClient(event)
+      })
+    }
+    if (closedPrior) {
+      io.to(roomCode).emit('confusion:closed', {
+        roomId: String(roomId),
+        reason: 'topic_changed',
+        event: formatForClient(closedPrior)
+      })
+    }
+  } catch (e) {
+    // Don't fail the doubt on attach errors -- the signal is already saved.
+    console.error('[broadcastRecordedDoubt] attachToEvent error:', e)
+  }
+}
+
+/**
  * Detect confusion spikes. A segment is a spike when:
  *   - rawCount >= minMarkCount  (default 3), OR
  *   - rawCount >= mean + spikeStdDevMultiplier * stddev  (default 2.0)

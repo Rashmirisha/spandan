@@ -10,13 +10,8 @@ import {
   getRoomSession,
   getSpikeDetails,
   getSignalsForRoom,
-  hashStudent
+  broadcastRecordedDoubt
 } from '../services/doubtService.js'
-import {
-  attachSignalToEvent,
-  formatForClient
-} from '../services/confusionEventService.js'
-import { ensureRoomSalt } from '../services/doubtService.js'
 
 const router = express.Router()
 
@@ -66,53 +61,17 @@ router.post('/', authenticate, async (req, res) => {
 
     // Notify the teacher (room audience) via Socket.IO. The route handler does
     // not have direct access to io here so we use app.get('io') set in index.js.
+    // Broadcast logic is shared with the Socket.IO 'doubt:signal' handler via
+    // broadcastRecordedDoubt() so both paths emit identical events.
     const io = req.app.get('io')
     if (io && room.code) {
-      const counts = await getDoubtCountsBySegment(roomId)
-      const segCount = counts.find(c => c.segmentIndex === (segmentIndex || 0))?.count || 1
-      io.to(room.code).emit('doubt:new', {
-        roomId: String(roomId),
-        segmentIndex: segmentIndex || 0,
-        count: segCount,
-        recordingOffsetMs: result.signal.recordingOffsetMs,
-        recordingOffsetLabel: result.signal.recordingOffsetLabel,
-        utteranceSnapshot: result.signal.utteranceSnapshot || '',
-        timestamp: Date.now()
+      await broadcastRecordedDoubt({
+        io,
+        room,
+        userId: req.user._id,
+        payload: { roomId, segmentIndex, transcriptOffsetMs },
+        signal: result.signal
       })
-
-      // ── NEW: attach signal to the active ConfusionEvent for this room/topic
-      // and broadcast `confusion:update` so the teacher dashboard re-renders
-      // the single live alert card (instead of one row per tap).
-      try {
-        const salt = await ensureRoomSalt(roomId)
-        const studentHash = salt ? hashStudent(req.user._id, salt) : null
-        if (studentHash) {
-          const { event, action, closedPrior } = await attachSignalToEvent({
-            roomId,
-            signalId: result.signal._id,
-            studentHash,
-            recordingOffsetMs: result.signal.recordingOffsetMs,
-            utteranceSnapshot: result.signal.utteranceSnapshot || ''
-          })
-          if (action === 'merged' || action === 'created') {
-            io.to(room.code).emit('confusion:update', {
-              roomId: String(roomId),
-              action,           // 'created' | 'merged'
-              event: formatForClient(event)
-            })
-          }
-          if (closedPrior) {
-            io.to(room.code).emit('confusion:closed', {
-              roomId: String(roomId),
-              reason: 'topic_changed',
-              event: formatForClient(closedPrior)
-            })
-          }
-        }
-      } catch (attachErr) {
-        // Don't fail the doubt on attach errors -- the signal is already saved.
-        console.error('[doubts] attachToEvent error:', attachErr)
-      }
     }
 
     res.json({ success: true, signal: { id: result.signal._id } })

@@ -302,7 +302,8 @@ io.on('connection', (socket) => {
       if (!data || !data.roomId || !data.roomCode) return
       const userId = connectedUsers.get(socket.id)
       if (!userId) return
-      const { recordDoubt, getDoubtCountsBySegment } = await import('./services/doubtService.js')
+      const { recordDoubt, broadcastRecordedDoubt } = await import('./services/doubtService.js')
+      const { Room } = await import('./models/index.js')
       const result = await recordDoubt({
         roomId: data.roomId,
         userId,
@@ -317,16 +318,19 @@ io.on('connection', (socket) => {
         socket.emit('doubt:ignored', { reason: result.reason, retryAfterMs: result.retryAfterMs })
         return
       }
-      const counts = await getDoubtCountsBySegment(data.roomId)
-      const segCount = counts.find(c => c.segmentIndex === (data.segmentIndex || 0))?.count || 1
-      io.to(data.roomCode).emit('doubt:new', {
-        roomId: String(data.roomId),
-        segmentIndex: data.segmentIndex || 0,
-        count: segCount,
-        recordingOffsetMs: result.signal.recordingOffsetMs,
-        recordingOffsetLabel: result.signal.recordingOffsetLabel,
-        utteranceSnapshot: result.signal.utteranceSnapshot || '',
-        timestamp: Date.now()
+      // Load the minimal Room fields needed for room-based broadcasting so
+      // broadcastRecordedDoubt() can emit to the right socket.io room.
+      // (HTTP route already has this loaded from its authorization check.)
+      const room = await Room.findById(data.roomId).select('_id code')
+      if (!room) return
+      // Shared broadcast step — identical to HTTP POST /api/doubts:
+      // emits doubt:new, then confusion:update / confusion:closed.
+      await broadcastRecordedDoubt({
+        io,
+        room,
+        userId,
+        payload: data,
+        signal: result.signal
       })
       socket.emit('doubt:confirmed', {
         segmentIndex: data.segmentIndex || 0,
