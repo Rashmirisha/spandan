@@ -65,7 +65,7 @@ export default function ConfusionResolvedPrompt ({ roomId }) {
 
   if (!prompt) return null
 
-  const topicLabel = prompt.topic?.label || 'this topic'
+  const topicLabel = (typeof prompt.topic === 'string' ? prompt.topic : (prompt.topic?.label || '')) || 'this topic'
 
   if (responded) {
     return (

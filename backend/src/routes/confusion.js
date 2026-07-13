@@ -157,12 +157,14 @@ router.post('/event/:eventId/request-feedback', authenticate, authorize('teacher
     }
     const io = req.app.get('io')
     if (io && room.code) {
-      io.to(room.code).emit('confusion:resolved', {
+      const payload = {
         roomId: String(evt.roomId),
         eventId: String(evt._id),
-        topic: evt.topic,
+        topic: evt.topicLabel || 'General Confusion',
         expectedRespondents: evt.confusedStudentCount || (evt.studentIds ? evt.studentIds.length : 0)
-      })
+      }
+      console.log('[confusion] request-feedback emit confusion:resolved to room', room.code, payload)
+      io.to(room.code).emit('confusion:resolved', payload)
     }
     res.json({ success: true, event: formatForClient(evt) })
   } catch (err) {
