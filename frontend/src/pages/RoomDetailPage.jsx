@@ -334,7 +334,7 @@ function RoomDetailPage() {
     setIsPendingReview(true)
     setGenerateQEnabled(false) // Disable manual button during auto-process
 
-    // Capture transcript
+    // Capture transcript and save if long enough.
     const textToUse = segmentTranscriptRef.current.trim() || transcript.trim()
 
     if (!textToUse || textToUse.length < 50) {
@@ -356,11 +356,7 @@ function RoomDetailPage() {
     }
 
     // Save transcript to database before generating questions.
-    try {
-      await saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
-      console.log('[SEGMENT] Transcript saved to DB')
-    } catch (err) {
-      console.error('[SEGMENT] Failed to save transcript:', err)
+    if (!(await saveCurrentSegmentTranscript())) {
       window.alert('Transcript could not be saved. Please try generating questions manually after checking the connection.')
       setGenerateQEnabled(true)
       return
@@ -819,9 +815,33 @@ function RoomDetailPage() {
     setModelStatus('Ready')
   }
 
-  const toggleRecording = () => {
+  // Save whatever transcript we have accumulated for the current segment.
+  // Returns true if saved, false if skipped (too short / error).
+  // Used by both the segment-timer path (handleSegmentComplete) and the
+  // manual stop path (toggleRecording) so auto-topic generation can fire
+  // even when the teacher stops recording before the timer expires.
+  const saveCurrentSegmentTranscript = async () => {
+    const textToUse = (segmentTranscriptRef.current || '').trim() || (transcript || '').trim()
+    if (!textToUse || textToUse.length < 50) {
+      console.log('[SEGMENT] Transcript too short (<50 chars), skipping save')
+      return false
+    }
+    try {
+      await saveTranscript(room._id, currentSegment, textToUse, (roomSettings.segmentTime || 0) * 60)
+      console.log('[SEGMENT] Transcript saved to DB')
+      return true
+    } catch (err) {
+      console.error('[SEGMENT] Failed to save transcript:', err)
+      return false
+    }
+  }
+
+  const toggleRecording = async () => {
     if (isRecording) {
-      stopRecording()
+      await stopRecording()
+      // Manual stop: still flush whatever transcript has accumulated so the
+      // auto-topic pipeline can extract a topic before the next doubt lands.
+      await saveCurrentSegmentTranscript()
     } else {
       startRecording()
     }
