@@ -134,5 +134,9 @@ export const confusionApi = {
   getLatest: (roomId) => api.get(`/confusion/room/${roomId}/latest`),
   getHistory: (roomId, limit = 50) => api.get(`/confusion/room/${roomId}?limit=${limit}`),
   getHeatmap: (roomId, opts = {}) => api.get(`/confusion/room/${roomId}/heatmap?bucketMs=${opts.bucketMs || 60000}&windowMs=${opts.windowMs || 600000}`),
-  getTopicHeat: (roomId, topN = 10) => api.get(`/confusion/room/${roomId}/topic-heat?topN=${topN}`)
+  getTopicHeat: (roomId, topN = 10) => api.get(`/confusion/room/${roomId}/topic-heat?topN=${topN}`),
+  // RECOVERY FLOW: teacher requests student feedback on an active event
+  requestFeedback: (eventId) => api.post(`/confusion/event/${eventId}/request-feedback`),
+  // RECOVERY FLOW: student responds with understood / still_confused
+  submitFeedback: (eventId, answer) => api.post(`/confusion/event/${eventId}/feedback`, { answer })
 }

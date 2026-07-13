@@ -20,6 +20,29 @@ const MAX_LABEL_LEN = 120
 const MAX_NOTE_LEN = 240
 
 /**
+ * Returns true if a stored topic label is obviously corrupted --
+ * contains Whisper-hallucinated filler tokens, repeated phrases,
+ * or stopword fragments. Used to decide whether to fall through
+ * to the heuristic on fresh transcripts.
+ */
+function looksCorrupted (label) {
+  if (!label || typeof label !== 'string') return true
+  const s = label.trim()
+  if (s.length < 2) return true
+  // Repeated word: 'Photosynthesis which Photosynthesis' / 'Restakes photos photos'
+  const tokens = s.split(/\s+/)
+  for (let i = 1; i < tokens.length; i++) {
+    if (tokens[i].toLowerCase() === tokens[i - 1].toLowerCase()) return true
+  }
+  // Known hallucination tokens / filler words that aren't real concepts
+  const HALLUC = /\b(Restakes|Mistakes|Strangesth|Session|annoying|that's|hello)\b/i
+  if (HALLUC.test(s)) return true
+  // Subordinate-clause glue words -- shouldn't be in a topic label
+  if (/\b(which|where|when|how|why)\s+(contain|have|has|is|are)\b/i.test(s)) return true
+  return false
+}
+
+/**
  * Add or update a topic marker. If a marker already starts at the same
  * `startMs` in this room, it's replaced (idempotent for the teacher's UX
  * of "fix the label").
@@ -148,13 +171,24 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
   }).sort({ startMs: -1 }).lean()
 
   if (lastMarker) {
-    return {
-      label: lastMarker.label,
-      note: lastMarker.note || '',
-      source: 'latest_marker',
-      markerId: lastMarker._id,
-      startMs: lastMarker.startMs,
-      endMs: lastMarker.endMs
+    // STALE-MARKER FIX: skip stale auto markers (endMs:0 or null AND old).
+    // Stale labels like "Photosynthesis which Photosynthesis" were baked
+    // into the DB by an old heuristic and never corrected. Regenerate.
+    const isOpenEnded = !lastMarker.endMs
+    const markerAgeMs = lastMarker.createdAt ? (Date.now() - new Date(lastMarker.createdAt).getTime()) : 0
+    const isStale = isOpenEnded && markerAgeMs > 5 * 60 * 1000
+    const labelLooksCorrupt = looksCorrupted(lastMarker.label)
+    if (isStale || labelLooksCorrupt) {
+      // fall through to the transcript fallback
+    } else {
+      return {
+        label: lastMarker.label,
+        note: lastMarker.note || '',
+        source: 'latest_marker',
+        markerId: lastMarker._id,
+        startMs: lastMarker.startMs,
+        endMs: lastMarker.endMs
+      }
     }
   }
 
@@ -183,8 +217,9 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
   }
 
   if (transcripts.length > 0) {
+    const raw = extractTopicProxy(transcripts[0].text)
     return {
-      label: extractTopicProxy(transcripts[0].text),
+      label: raw || 'General Confusion',
       note: '',
       source: 'transcript',
       markerId: null
@@ -200,8 +235,9 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
     .lean()
 
   if (lastTranscript) {
+    const raw = extractTopicProxy(lastTranscript.text)
     return {
-      label: extractTopicProxy(lastTranscript.text),
+      label: raw || 'General Confusion',
       note: '',
       source: 'latest_transcript',
       markerId: null

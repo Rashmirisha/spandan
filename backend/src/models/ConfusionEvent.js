@@ -97,6 +97,12 @@ const confusionEventSchema = new mongoose.Schema({
   closedAt: {
     type: Date,
     default: null
+  },
+  // Count of student "still confused" responses after a teacher resolve
+  reopenedCount: {
+    type: Number,
+    default: 0,
+    min: 0
   }
 }, {
   timestamps: true

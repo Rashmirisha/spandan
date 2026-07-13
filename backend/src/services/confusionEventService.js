@@ -288,6 +288,63 @@ export async function closeAllActiveForRoom (roomId) {
   return r.modifiedCount || 0
 }
 
+/**
+ * RESOLVED PROMPT: teacher-initiated resolve of a specific confusion event.
+ * Sets status='closed' if currently 'active'. Idempotent.
+ *
+ * Returns the updated event doc (lean) or null if not found / invalid id.
+ */
+export async function resolveEventByTeacher (eventId) {
+  if (!mongoose.Types.ObjectId.isValid(String(eventId))) return null
+  const updated = await ConfusionEvent.findOneAndUpdate(
+    { _id: eventId, status: 'active' },
+    { $set: { status: 'closed', closedAt: new Date() } },
+    { new: true }
+  ).lean()
+  return updated
+}
+
+/**
+ * RESOLVED PROMPT: student feedback on a (presumably teacher-resolved) event.
+ *
+ *   answer='understood'    -> increment understoodCount (in-memory tally)
+ *   answer='still_confused' -> reopen the event (status='active'),
+ *                              increment reopenedCount
+ *
+ * The in-memory understoodCount is keyed by eventId and survives within the
+ * process lifetime. (Restart loss is acceptable for the demo -- the teacher
+ * dashboard re-fetches event.reopenedCount from Mongo on reconnect.)
+ */
+const feedbackTallies = new Map() // eventId -> { understood: n, stillConfused: n }
+
+export function recordFeedback (eventId, answer) {
+  const tally = feedbackTallies.get(String(eventId)) || { understood: 0, stillConfused: 0 }
+  if (answer === 'understood') tally.understood += 1
+  else if (answer === 'still_confused') tally.stillConfused += 1
+  feedbackTallies.set(String(eventId), tally)
+  return { ...tally }
+}
+
+export function getFeedbackTally (eventId) {
+  return feedbackTallies.get(String(eventId)) || { understood: 0, stillConfused: 0 }
+}
+
+/**
+ * RESOLVED PROMPT: reopen a previously closed event (student said
+ * 'still_confused'). Increments event.reopenedCount atomically.
+ */
+export async function reopenEvent (eventId) {
+  if (!mongoose.Types.ObjectId.isValid(String(eventId))) return null
+  const updated = await ConfusionEvent.findOneAndUpdate(
+    { _id: eventId, status: 'closed' },
+    [
+      { $set: { status: 'active', closedAt: null, reopenedCount: { $add: ['$reopenedCount', 1] } } }
+    ],
+    { new: true }
+  ).lean()
+  return updated
+}
+
 export default {
   attachSignalToEvent,
   getActiveForRoom,
@@ -295,5 +352,9 @@ export default {
   listForRoom,
   closeEvent,
   closeAllActiveForRoom,
+  resolveEventByTeacher,
+  reopenEvent,
+  recordFeedback,
+  getFeedbackTally,
   formatForClient
 }

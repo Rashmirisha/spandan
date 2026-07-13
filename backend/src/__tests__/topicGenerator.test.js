@@ -25,7 +25,7 @@ describe('extractTopicProxy', () => {
 
   it('strips [applause] stage directions before extracting', () => {
     const label = extractTopicProxy('[applause] Now Calvin cycle fixes carbon.')
-    expect(label).toContain('Calvin cycle')
+    expect(label.toLowerCase()).toContain('calvin cycle')
     expect(label).not.toMatch(/^Now/i)
   })
 
@@ -66,6 +66,61 @@ describe('extractTopicProxy', () => {
     const label = extractTopicProxy('[blank_audio] Today we cover Dijkstra algorithm.')
     expect(label.toLowerCase()).toContain('dijkstra')
     expect(label).not.toMatch(/^Today/i)
+  })
+
+  // ─── Required topic-extraction cases ────────────────────────────────
+  // Each input describes a real lecture topic. Expected behavior:
+  //   - strip stopwords / filler / transcription artifacts
+  //   - prefer capitalized scientific terms
+  //   - return only the strong keyword for standalone topics
+  //   - return the 2-word compound for compound topics
+  //   - never repeat the same word twice
+
+  it('extracts "Photosynthesis" from a lowercase-mention transcript', () => {
+    const label = extractTopicProxy('Today we discuss photosynthesis.')
+    expect(label).toBe('Photosynthesis')
+  })
+
+  it('extracts "Mitosis" from a learn-about-lecture transcript', () => {
+    const label = extractTopicProxy("Let's learn about mitosis.")
+    expect(label).toBe('Mitosis')
+  })
+
+  it('extracts "French Revolution" as a compound topic', () => {
+    const label = extractTopicProxy('Today we begin our unit on the French Revolution and its causes.')
+    expect(label).toBe('French Revolution')
+  })
+
+  it('extracts "Quadratic formula" from a lowercase-math transcript (sentence-case convention)', () => {
+    const label = extractTopicProxy('The quadratic formula solves for the roots of any second-degree polynomial.')
+    expect(label).toBe('Quadratic formula')
+  })
+
+  it('extracts "Natural Selection" as a compound topic', () => {
+    const label = extractTopicProxy('Darwin proposed Natural Selection as the mechanism for evolution by descent with modification.')
+    expect(label).toBe('Natural Selection')
+  })
+
+  it('never repeats a word in the output label', () => {
+    const label = extractTopicProxy('Photosynthesis which Photosynthesis is the basis of Photosynthesis.')
+    expect(label).not.toMatch(/\b(\w+)\s+\1\b/i)
+  })
+
+  it('does not include stopwords or filler in the label', () => {
+    const label = extractTopicProxy('OK so today we are going to be talking about photosynthesis.')
+    expect(label.toLowerCase()).not.toMatch(/\b(today|about|talking|going)\b/)
+    expect(label).toBe('Photosynthesis')
+  })
+
+  it('caps labels at 4 meaningful words', () => {
+    const label = extractTopicProxy('Photosynthesis Cellular Respiration Energy Metabolism Biochemical Pathways all share similarities.')
+    const words = label.split(/\s+/)
+    expect(words.length).toBeLessThanOrEqual(4)
+  })
+
+  it('returns Title Case for compound topics', () => {
+    const label = extractTopicProxy('We examine Binary Search trees next.')
+    expect(label).toBe('Binary Search')
   })
 })
 

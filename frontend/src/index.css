@@ -1997,3 +1997,233 @@ html {
   }
 }
 
+
+
+/* ============================================================
+   RESOLVED PROMPT: student-side "Has your doubt been resolved?" popup
+   ============================================================ */
+.crp-shell {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 70;
+  max-width: 460px;
+  width: calc(100% - 32px);
+  background: rgba(28, 28, 32, 0.96);
+  color: #fff;
+  border-radius: 16px;
+  padding: 14px 18px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(160, 220, 180, 0.45);
+  animation: crp-pop 280ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+@keyframes crp-pop {
+  0% { transform: translate(-50%, 16px) scale(0.94); opacity: 0; }
+  100% { transform: translate(-50%, 0) scale(1); opacity: 1; }
+}
+.crp-shell--done {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  border-color: rgba(120, 200, 140, 0.6);
+}
+.crp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.crp-icon {
+  font-size: 22px;
+}
+.crp-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.crp-sub {
+  font-size: 13px;
+  opacity: 0.78;
+}
+.crp-sub strong {
+  color: #a8e0c5;
+}
+.crp-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.crp-btn {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 80ms ease, background 120ms ease;
+}
+.crp-btn:active { transform: scale(0.97); }
+.crp-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.crp-btn--yes {
+  background: rgba(72, 200, 130, 0.18);
+  border-color: rgba(72, 200, 130, 0.5);
+}
+.crp-btn--yes:hover {
+  background: rgba(72, 200, 130, 0.28);
+}
+.crp-btn--no {
+  background: rgba(255, 140, 130, 0.18);
+  border-color: rgba(255, 140, 130, 0.5);
+}
+.crp-btn--no:hover {
+  background: rgba(255, 140, 130, 0.28);
+}
+.crp-text {
+  font-size: 14px;
+}
+.crp-feedback-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  opacity: 0.85;
+}
+.crp-feedback-count {
+  font-weight: 600;
+  color: #58d59a;
+}
+.crp-feedback-count--warn {
+  color: #ff9988;
+}
+@media (max-width: 480px) {
+  .crp-shell { bottom: 16px; max-width: calc(100% - 24px); font-size: 14px; }
+}
+
+
+/* ============================================================
+   RESOLVED PROMPT: teacher-side actions + tally on ConfusionAlertCard
+   ============================================================ */
+.cac-row--actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.cac-btn {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 80ms ease, background 120ms ease;
+}
+.cac-btn:active { transform: scale(0.97); }
+.cac-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.cac-btn--resolve {
+  background: rgba(72, 200, 130, 0.18);
+  border-color: rgba(72, 200, 130, 0.5);
+}
+.cac-btn--resolve:hover:not(:disabled) {
+  background: rgba(72, 200, 130, 0.28);
+}
+.cac-feedback-tally {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  margin-left: auto;
+}
+.cac-feedback-tally .crp-feedback-count {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+
+/* ============================================================
+   RECOVERY FLOW: teacher dashboard Recovery section
+   ============================================================ */
+.cac-recovery {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.cac-recovery-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-size: 11px;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.cac-recovery-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.cac-recovery-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.cac-recovery-pill--yes {
+  background: rgba(72, 200, 130, 0.18);
+  color: #58d59a;
+}
+.cac-recovery-pill--no {
+  background: rgba(255, 140, 130, 0.18);
+  color: #ff9988;
+}
+.cac-recovery-score {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.cac-recovery-score[data-score="good"] { color: #58d59a; }
+.cac-recovery-score[data-score="mid"]  { color: #f0c060; }
+.cac-recovery-score[data-score="low"]  { color: #ff9988; }
+.cac-recovery-banner {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 140, 130, 0.14);
+  border: 1px solid rgba(255, 140, 130, 0.45);
+  color: #ff9988;
+}
+.cac-recovery-banner--ok {
+  background: rgba(72, 200, 130, 0.14);
+  border-color: rgba(72, 200, 130, 0.45);
+  color: #58d59a;
+}
+.cac-btn--resolve {
+  font-size: 13px;
+  font-weight: 600;
+}

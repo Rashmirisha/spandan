@@ -8,6 +8,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import Leaderboard from '../components/Leaderboard'
 import ImLostButton from '../components/ImLostButton'
+import ConfusionResolvedPrompt from '../components/ConfusionResolvedPrompt'
 import { API_URL } from '../config.js'
 
 function StudentRoomPage() {
@@ -786,6 +787,9 @@ function StudentRoomPage() {
             getCurrentSegment={() => ({ segmentIndex: liveSegmentIndex, transcriptOffsetMs: liveTranscriptOffsetMs })}
           />
         </div>
+
+        {/* RESOLVED PROMPT: student-side popup when teacher closes confusion */}
+        <ConfusionResolvedPrompt roomId={room?._id} />
     </div>
   )
 }

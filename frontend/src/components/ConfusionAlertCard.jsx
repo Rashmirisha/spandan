@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { confusionApi } from '../lib/api.js'
 import { useSocketStore } from '../stores/socketStore.js'
+import { useAuthStore } from '../stores/authStore.js'
+import sounds from '../lib/sounds.js'
 
 /**
  * ConfusionAlertCard -- THE single live confusion card per room.
@@ -23,6 +25,8 @@ import { useSocketStore } from '../stores/socketStore.js'
  */
 export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
   const socket = useSocketStore(s => s.socket)
+  const userRole = useAuthStore(s => s.user?.role)
+  const isTeacher = userRole === 'teacher' || userRole === 'admin'
   const [event, setEvent] = useState(null)
   const [latest, setLatest] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -30,6 +34,9 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
   const [displayCount, setDisplayCount] = useState(0)
   const [pulseKey, setPulseKey] = useState(0)
   const prevCountRef = useRef(0)
+  // RESOLVED PROMPT: feedback tally for the teacher dashboard
+  const [feedbackTally, setFeedbackTally] = useState({ understood: 0, stillConfused: 0, expectedRespondents: 0, needsMoreExplanation: false, autoClosed: false, reopenedCount: 0 })
+  const [resolving, setResolving] = useState(false)
 
   const fetchAll = useCallback(async () => {
     if (!roomId) return
@@ -73,11 +80,52 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
       setEvent(null)
       if (data.event) setLatest(data.event)
     }
+    // RESOLVED PROMPT: teacher-initiated close -> flash a brief banner on
+    // the card (the popup for students is rendered by ConfusionResolvedPrompt).
+    const onResolved = (data) => {
+      if (String(data.roomId) !== String(roomId)) return
+      if (data.event) setLatest(data.event)
+      setEvent(null)
+      // Reset tally for the next event (the resolved one is done).
+      setFeedbackTally({
+      understood: 0,
+      stillConfused: 0,
+      expectedRespondents: data.expectedRespondents || 0,
+      needsMoreExplanation: false,
+      autoClosed: false,
+      reopenedCount: 0
+    })
+      try { sounds.tap() } catch {}
+    }
+    // RESOLVED PROMPT: student responded -> update running tally on this card.
+    const onFeedback = (data) => {
+      if (String(data.roomId) !== String(roomId)) return
+      setFeedbackTally({
+        understood: data.understood || 0,
+        stillConfused: data.stillConfused || 0,
+        expectedRespondents: data.expectedRespondents || 0,
+        needsMoreExplanation: !!data.needsMoreExplanation,
+        autoClosed: !!data.autoClosed,
+        reopenedCount: data.reopenedCount || 0
+      })
+      // If a student said still_confused, the event is reopened -- bring
+      // it back into the active state on the dashboard.
+      if (data.reopened && data.eventId) {
+        // Re-fetch so we get the reopened snapshot with up-to-date count.
+        confusionApi.getActive(roomId).then(r => {
+          if (r?.event) setEvent(r.event)
+        }).catch(() => {})
+      }
+    }
     socket.on('confusion:update', onUpdate)
     socket.on('confusion:closed', onClosed)
+    socket.on('confusion:resolved', onResolved)
+    socket.on('confusion:feedback', onFeedback)
     return () => {
       socket.off('confusion:update', onUpdate)
       socket.off('confusion:closed', onClosed)
+      socket.off('confusion:resolved', onResolved)
+      socket.off('confusion:feedback', onFeedback)
     }
   }, [socket, roomId])
 
@@ -244,6 +292,66 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
             </div>
           </div>
         </div>
+
+        {/* RESOLVED PROMPT: teacher-only action area */}
+        {isTeacher && (
+          <div className="cac-row cac-row--actions">
+            {isActive && (
+              <button
+                type="button"
+                className="cac-btn cac-btn--resolve"
+                disabled={resolving}
+                onClick={async () => {
+                  if (!card?._id || resolving) return
+                  setResolving(true)
+                  try {
+                    await confusionApi.requestFeedback(card._id)
+                  } catch (e) {
+                    console.error('[ConfusionAlertCard] request-feedback failed:', e?.message)
+                  } finally {
+                    setResolving(false)
+                  }
+                }}
+              >
+                {resolving ? 'Requesting…' : '📣 Ask Students: Did this help?'}
+              </button>
+            )}
+            {(feedbackTally.expectedRespondents > 0 || feedbackTally.understood > 0 || feedbackTally.stillConfused > 0) && (() => {
+              const u = feedbackTally.understood || 0
+              const sc = feedbackTally.stillConfused || 0
+              const total = Math.max(feedbackTally.expectedRespondents || 0, u + sc)
+              const score = total > 0 ? Math.round((u / total) * 100) : 0
+              return (
+                <div className="cac-recovery" aria-live="polite">
+                  <div className="cac-recovery-title">Recovery</div>
+                  <div className="cac-recovery-row">
+                    <span className="cac-recovery-pill cac-recovery-pill--yes">
+                      ✅ Understood: {u}
+                    </span>
+                    {sc > 0 && (
+                      <span className="cac-recovery-pill cac-recovery-pill--no">
+                        ❌ Still Confused: {sc}
+                      </span>
+                    )}
+                    <span className="cac-recovery-score" data-score={score >= 70 ? 'good' : score >= 40 ? 'mid' : 'low'}>
+                      Recovery Score: {score}%
+                    </span>
+                  </div>
+                  {feedbackTally.needsMoreExplanation && (
+                    <div className="cac-recovery-banner" role="status">
+                      ⚠️ Needs More Explanation — {sc} {sc === 1 ? 'student is' : 'students are'} still confused.
+                    </div>
+                  )}
+                  {feedbackTally.autoClosed && (
+                    <div className="cac-recovery-banner cac-recovery-banner--ok">
+                      ✅ Event closed — all {u} students understood.
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+          </div>
+        )}
       </div>
     </div>
   )

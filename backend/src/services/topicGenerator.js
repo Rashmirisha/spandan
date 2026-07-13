@@ -137,12 +137,39 @@ export function extractTopicProxy (text) {
     .slice(0, 3)
     .map(([w]) => w)
   if (top.length >= 2) {
-    return top.map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w).join(' ').slice(0, 60)
+    return sanitizeLabel(top.map((w, i) => i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w).join(' '))
   }
 
   // Strategy 3: first 6 words of first sentence
   const firstSentence = cleaned.split(/[.!?]/, 1)[0]
-  return firstSentence.split(/\s+/).slice(0, 6).join(' ').slice(0, 60)
+  return sanitizeLabel(firstSentence.split(/\s+/).slice(0, 6).join(' '))
+}
+
+// Sanitize the final extracted label. Strip duplicate consecutive words,
+// collapse obvious artifacts, and trim leading/trailing filler words.
+function sanitizeLabel (label) {
+  if (!label) return ''
+  let s = label.slice(0, 60)
+  // collapse duplicate consecutive words (case-insensitive): 'Photosynthesis Photosynthesis' -> 'Photosynthesis'
+  s = s.split(/\s+/).filter((w, i, arr) => i === 0 || w.toLowerCase() !== arr[i - 1].toLowerCase()).join(' ')
+  // drop leading and trailing stopword-ish fillers that aren't real topic words
+  const NOISE = new Set(['a', 'an', 'the', 'of', 'in', 'on', 'to', 'for', 'and', 'or', 'is', 'are', 'was', 'were', 'this', 'that', 'these', 'those', 'which', 'it', 'its', 'we', 'today', 'yesterday', 'discuss', 'learn', 'about', 'begin', 'starts', 'start', 'topic', 'unit', 'lesson', 'chapter'])
+  let parts = s.split(/\s+/)
+  while (parts.length > 1 && NOISE.has(parts[0].toLowerCase())) parts.shift()
+  while (parts.length > 1 && NOISE.has(parts[parts.length - 1].toLowerCase())) parts.pop()
+  s = parts.join(' ')
+  // collapse any final repeated-phrase artifact: 'Photosynthesis which Photosynthesis' -> 'Photosynthesis'
+  const tokens = s.split(/\s+/)
+  const seen = new Set()
+  const unique = []
+  for (const t of tokens) {
+    const k = t.toLowerCase()
+    if (NOISE.has(k)) continue
+    if (seen.has(k)) continue
+    seen.add(k)
+    unique.push(t)
+  }
+  return unique.join(' ')
 }
 
 /**
