@@ -77,4 +77,4 @@ JWT_SECRET=your-secret-key
 
 ## License
 
-Private — All rights reserved
+Private project, internal use only.
