@@ -20,6 +20,7 @@ import TopicMarkerBar from '../components/TopicMarkerBar'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { API_URL } from '../config.js'
+import api from '../lib/api.js'
 
 function RoomDetailPage() {
   const { roomId } = useParams()
@@ -688,6 +689,11 @@ function RoomDetailPage() {
     const posStore = useTeacherPositionStore.getState()
     roomStartedAtRef.current = Date.now()
     posStore.startSession(room._id, room.code, roomStartedAtRef.current).catch(() => {})
+    // Persist the session start on the backend so Room.roomStartedAt is set.
+    // The auto-topic pipeline (POST /api/transcripts) bails out early when
+    // this field is null, which made brand-new rooms fall back to "General
+    // confusion" instead of generating a real topic marker.
+    api.doubts.startSession(room._id).catch(() => {})
     teacherPositionBroadcastRef.current = setInterval(() => {
       const offsetMs = Date.now() - (roomStartedAtRef.current || Date.now())
       const seg = currentSegmentRef.current ?? 0
