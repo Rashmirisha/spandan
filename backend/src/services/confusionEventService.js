@@ -1,5 +1,5 @@
 import mongoose from 'mongoose'
-import { ConfusionEvent } from '../models/index.js'
+import { ConfusionEvent, Room } from '../models/index.js'
 import { resolveTopicForOffset } from './topicService.js'
 import { scoreEvent } from './confusionScoring.js'
 
@@ -133,7 +133,25 @@ export async function attachSignalToEvent ({
   // Resolve topic context if not provided (caller may have already looked it up)
   let topic = topicContext
   if (!topic) {
-    topic = await resolveTopicForOffset({ roomId, recordingOffsetMs: recordingOffsetMs || 0 })
+    // ALWAYS pass roomStartedAt so topic resolution is session-scoped.
+    // Without it, the fallback path can pull transcripts/markers from a
+    // previous lecture session in the same room (e.g. "Hello hello",
+    // "Photosynthesis which Photosynthesis", "Whether climate").
+    // If the room hasn't been started yet, we use null and the resolver
+    // returns 'General Confusion' (no cross-session leak possible).
+    let roomStartedAt = null
+    try {
+      const room = await Room.findById(roomId).select('roomStartedAt').lean()
+      roomStartedAt = room?.roomStartedAt || null
+    } catch (e) {
+      // If we can't load the room, fall through with null (resolver
+      // will give 'General Confusion' rather than leak from another session)
+    }
+    topic = await resolveTopicForOffset({
+      roomId,
+      recordingOffsetMs: recordingOffsetMs || 0,
+      roomStartedAt
+    })
   }
   let topicLabel = (topic.label || '').trim()
   let topicSubtopic = (topic.note || '').trim()
@@ -145,8 +163,13 @@ export async function attachSignalToEvent ({
   // This handles the common cold-start case: student taps "I'm Lost" before
   // the teacher has produced any transcript or marker, and the only signal
   // we have is the student's own description of what they're lost on.
+  //
+  // We also allow the utterance to override the resolver's defensive
+  // 'General Confusion' placeholder (set when roomStartedAt is null),
+  // because the student's own words are a strictly more specific signal.
   const ut = (typeof utteranceSnapshot === 'string' ? utteranceSnapshot : '').trim()
-  if (!topicLabel && ut.length > 0) {
+  const placeholderLabel = !topicLabel || topicLabel.toLowerCase() === 'general confusion'
+  if (placeholderLabel && ut.length > 0) {
     const { extractTopicProxy } = await import('./topicGenerator.js')
     const studentTopic = extractTopicProxy(ut)
     if (studentTopic) {
@@ -332,13 +355,29 @@ export function getFeedbackTally (eventId) {
 /**
  * RESOLVED PROMPT: reopen a previously closed event (student said
  * 'still_confused'). Increments event.reopenedCount atomically.
+ *
+ * Also accepts already-active events: in practice a student can click
+ * 'still_confused' before the event has been auto-closed (only some
+ * students responded understood). We must increment reopenedCount
+ * without requiring the event to first be closed.
  */
 export async function reopenEvent (eventId) {
   if (!mongoose.Types.ObjectId.isValid(String(eventId))) return null
   const updated = await ConfusionEvent.findOneAndUpdate(
-    { _id: eventId, status: 'closed' },
+    { _id: eventId },
     [
-      { $set: { status: 'active', closedAt: null, reopenedCount: { $add: ['$reopenedCount', 1] } } }
+      {
+        $set: {
+          status: 'active',
+          closedAt: null,
+          reopenedCount: {
+            $add: [
+              { $ifNull: ['$reopenedCount', 0] },
+              { $cond: [{ $eq: ['$status', 'closed'] }, 1, 0] }
+            ]
+          }
+        }
+      }
     ],
     { new: true }
   ).lean()

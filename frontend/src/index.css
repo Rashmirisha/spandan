@@ -2181,6 +2181,20 @@ html {
   gap: 8px;
   align-items: center;
 }
+.cac-recovery-row--totals {
+  /* First row: confused / understood / still confused pills */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cac-recovery-row--score {
+  /* Second row: progress + badge */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+}
 .cac-recovery-pill {
   display: inline-flex;
   align-items: center;
@@ -2189,6 +2203,10 @@ html {
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
+}
+.cac-recovery-pill--total {
+  background: rgba(140, 180, 255, 0.16);
+  color: #9bb8ff;
 }
 .cac-recovery-pill--yes {
   background: rgba(72, 200, 130, 0.18);
@@ -2199,16 +2217,37 @@ html {
   color: #ff9988;
 }
 .cac-recovery-score {
-  margin-left: auto;
-  font-size: 12px;
+  margin-left: 0;
+  font-size: 13px;
   font-weight: 700;
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
 }
 .cac-recovery-score[data-score="good"] { color: #58d59a; }
 .cac-recovery-score[data-score="mid"]  { color: #f0c060; }
 .cac-recovery-score[data-score="low"]  { color: #ff9988; }
+.cac-recovery-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+.cac-recovery-badge--warn {
+  background: rgba(255, 140, 130, 0.18);
+  border-color: rgba(255, 140, 130, 0.55);
+  color: #ff9988;
+}
+.cac-recovery-badge--ok {
+  background: rgba(72, 200, 130, 0.20);
+  border-color: rgba(72, 200, 130, 0.55);
+  color: #58d59a;
+}
 .cac-recovery-banner {
   font-size: 12px;
   font-weight: 600;

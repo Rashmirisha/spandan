@@ -302,10 +302,12 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
                 className="cac-btn cac-btn--resolve"
                 disabled={resolving}
                 onClick={async () => {
-                  if (!card?._id || resolving) return
+                  // card.id (not card._id) -- formatForClient returns { id, ... }
+                  // and confusionApi.requestFeedback expects the string id.
+                  if (!card?.id || resolving) return
                   setResolving(true)
                   try {
-                    await confusionApi.requestFeedback(card._id)
+                    await confusionApi.requestFeedback(card.id)
                   } catch (e) {
                     console.error('[ConfusionAlertCard] request-feedback failed:', e?.message)
                   } finally {
@@ -319,23 +321,44 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
             {(feedbackTally.expectedRespondents > 0 || feedbackTally.understood > 0 || feedbackTally.stillConfused > 0) && (() => {
               const u = feedbackTally.understood || 0
               const sc = feedbackTally.stillConfused || 0
+              // Total confused students for THIS event: fixed for the event's
+              // lifetime. Backend emits `expectedRespondents` =
+              // `evt.confusedStudentCount` (the count when the event was
+              // first recorded). We latch it once we see it so the total
+              // does not move even as the live count changes.
               const total = Math.max(feedbackTally.expectedRespondents || 0, u + sc)
               const score = total > 0 ? Math.round((u / total) * 100) : 0
+              const atFullRecovery = total > 0 && u >= total && sc === 0
               return (
                 <div className="cac-recovery" aria-live="polite">
                   <div className="cac-recovery-title">Recovery</div>
-                  <div className="cac-recovery-row">
-                    <span className="cac-recovery-pill cac-recovery-pill--yes">
+                  <div className="cac-recovery-row cac-recovery-row--totals">
+                    <span className="cac-recovery-pill cac-recovery-pill--total" data-testid="cac-recovery-total">
+                      👥 Confused: {total}
+                    </span>
+                    <span className="cac-recovery-pill cac-recovery-pill--yes" data-testid="cac-recovery-understood">
                       ✅ Understood: {u}
                     </span>
-                    {sc > 0 && (
-                      <span className="cac-recovery-pill cac-recovery-pill--no">
-                        ❌ Still Confused: {sc}
+                    <span className="cac-recovery-pill cac-recovery-pill--no" data-testid="cac-recovery-still">
+                      ❌ Still Confused: {sc}
+                    </span>
+                  </div>
+                  <div className="cac-recovery-row cac-recovery-row--score">
+                    <span className="cac-recovery-score" data-score={score >= 70 ? 'good' : score >= 40 ? 'mid' : 'low'} data-testid="cac-recovery-score">
+                      📊 Recovery: {u} / {total} ({score}%)
+                    </span>
+                    {/* Needs More Explanation badge: shown when ANY student
+                        clicked Still Confused. Event stays active. */}
+                    {feedbackTally.needsMoreExplanation && !atFullRecovery && (
+                      <span className="cac-recovery-badge cac-recovery-badge--warn" data-testid="cac-recovery-needs-more" role="status">
+                        ⚠ Needs More Explanation
                       </span>
                     )}
-                    <span className="cac-recovery-score" data-score={score >= 70 ? 'good' : score >= 40 ? 'mid' : 'low'}>
-                      Recovery Score: {score}%
-                    </span>
+                    {atFullRecovery && (
+                      <span className="cac-recovery-badge cac-recovery-badge--ok" data-testid="cac-recovery-resolved" role="status">
+                        ✅ Fully Resolved
+                      </span>
+                    )}
                   </div>
                   {feedbackTally.needsMoreExplanation && (
                     <div className="cac-recovery-banner" role="status">
