@@ -50,8 +50,15 @@ router.post('/', authenticate, async (req, res) => {
           recordingOffsetMs: new Date(t.createdAt).getTime() - new Date(room.roomStartedAt).getTime()
         }))
 
-        // Last auto topic marker (or null)
-        const lastAuto = await TopicMarker.findOne({ roomId, source: 'auto' })
+        // SESSION-SCOPED auto-marker lookup: only the most recent auto
+        // marker created AFTER this session started. Stale auto markers
+        // from a previous lecture session are ignored — their labels and
+        // range should not influence the current lecture.
+        const lastAuto = await TopicMarker.findOne({
+          roomId,
+          source: 'auto',
+          createdAt: { $gte: new Date(room.roomStartedAt) }
+        })
           .sort({ startMs: -1 }).lean()
 
         const proposal = await maybeGenerateAutoTopic({
@@ -63,8 +70,12 @@ router.post('/', authenticate, async (req, res) => {
 
         if (!proposal.createNew || !proposal.label) return
 
-        // Close out the previous auto topic's endMs
-        if (lastAuto && lastAuto.endMs == null) {
+        // ALWAYS close out the prior in-session auto topic when we create
+        // a new one. Previously this only ran when lastAuto.endMs was
+        // exactly null, but the creator stores endMs = nowMs + 5min, so
+        // the null check rarely fired. Now we close based on session
+        // scoping plus overlap with the new marker's range.
+        if (lastAuto && (lastAuto.endMs == null || lastAuto.endMs > nowMs)) {
           await TopicMarker.updateOne(
             { _id: lastAuto._id },
             { $set: { endMs: nowMs - 1 } }
@@ -77,8 +88,8 @@ router.post('/', authenticate, async (req, res) => {
           startMs: nowMs,
           // Auto-markers get a bounded span (default 5 minutes) so a stale
           // marker from a previous session doesn't haunt the current one.
-          // The next auto-marker created will close out this one via
-          // the `lastAuto.endMs == null` branch above.
+          // The next auto-marker will close out this one via the
+          // `lastAuto.endMs == null || endMs > nowMs` branch above.
           endMs: nowMs + 5 * 60 * 1000,
           label: proposal.label,
           source: proposal.source || 'auto',

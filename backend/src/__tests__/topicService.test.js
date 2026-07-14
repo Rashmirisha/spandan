@@ -138,7 +138,7 @@ describe('resolveTopicForOffset', () => {
   })
 
   it('returns marker for offset within window', async () => {
-    const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 30000 })
+    const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 30000, roomStartedAt: room.roomStartedAt })
     expect(r.source).toBe('marker')
     expect(r.label).toBe('Intro')
   })
@@ -153,15 +153,35 @@ describe('resolveTopicForOffset', () => {
 
   it('falls back to transcript when no marker covers', async () => {
     await TopicMarker.deleteMany({ roomId: room._id })
+    // roomStartedAt set to (now - 600000) by makeRoom(); create the transcript
+    // at recordingOffsetMs = 0 relative to that anchor, so the ±15s window hits.
+    const base = new Date(room.roomStartedAt).getTime()
     await Transcript.create({
       roomId: room._id,
       segmentIndex: 0,
       teacherId: teacher._id,
-      text: 'This is the discussion about cellular respiration and metabolic pathways.'
+      text: 'This is the discussion about cellular respiration and metabolic pathways.',
+      createdAt: new Date(base + 0)
     })
-    const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 999000, roomStartedAt: null })
+    const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 0, roomStartedAt: room.roomStartedAt })
     expect(r.source).toBe('transcript')
     expect(r.label.toLowerCase()).toContain('cellular')
+  })
+
+  it('returns no_session when roomStartedAt is null (defense against cross-session leak)', async () => {
+    await TopicMarker.deleteMany({ roomId: room._id })
+    await Transcript.create({
+      roomId: room._id,
+      segmentIndex: 0,
+      teacherId: teacher._id,
+      text: 'Stale transcript from a previous lecture about something else.',
+      createdAt: new Date(Date.now() - 60000)
+    })
+    const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 999000, roomStartedAt: null })
+    // Previously this returned 'transcript' with the stale label leaking in.
+    // Now it must return the safe General Confusion placeholder.
+    expect(r.source).toBe('no_session')
+    expect(r.label).toBe('General Confusion')
   })
 
   it('falls back to latest marker when offset is past the last closed marker', async () => {
@@ -183,33 +203,43 @@ describe('resolveTopicForOffset', () => {
     expect(r.label).toBe('Phase 1')
   })
 
-  it('returns latest_transcript when no marker covers and no transcript in window', async () => {
+  it('returns latest_transcript when no marker covers and no transcript in window (session-scoped)', async () => {
     await TopicMarker.deleteMany({ roomId: room._id })
     await Transcript.deleteMany({ roomId: room._id })
-    // Create a transcript whose createdAt is FAR from roomStartedAt + offset,
-    // so the ±15s window misses it. roomStartedAt is set in makeRoom() to (now - 600000).
+    // The transcript's createdAt must be >= roomStartedAt for the session-scoped
+    // soft fallback to find it. roomStartedAt is (now - 600000), so put the
+    // transcript 30s ago (well after the session start).
     await Transcript.create({
       roomId: room._id,
       segmentIndex: 0,
       teacherId: teacher._id,
       text: 'This is about mitochondrial metabolism and ATP synthesis.',
-      createdAt: new Date(Date.now() - 60000) // way before now
+      createdAt: new Date(Date.now() - 30000)
     })
+    // Now ask for an offset whose window (roomStartedAt + offset +/- 15s) is
+    // far from the transcript — transcript is at 30s ago, roomStartedAt is
+    // 600s ago, so offset 0 maps to "600s ago" and the transcript is 570s
+    // outside the window. The soft fallback (latest transcript >= roomStartedAt)
+    // should still find it.
     const r = await resolveTopicForOffset({
       roomId: room._id,
       recordingOffsetMs: 0,
-      roomStartedAt: new Date() // offset 0 maps to "now", transcript createdAt is 60s ago
+      roomStartedAt: new Date(Date.now() - 600000)
     })
     expect(r.source).toBe('latest_transcript')
     expect(r.label.toLowerCase()).toContain('mitochondrial')
   })
 
-  it('returns none when no marker and no transcript', async () => {
+  it('returns no_session when no marker and no transcript and no roomStartedAt', async () => {
     await TopicMarker.deleteMany({ roomId: room._id })
     await Transcript.deleteMany({ roomId: room._id })
     const r = await resolveTopicForOffset({ roomId: room._id, recordingOffsetMs: 999000 })
-    expect(r.source).toBe('none')
-    expect(r.label).toBe('')
+    // No session anchor + no data = safe General Confusion placeholder,
+    // NOT empty label (which would later get the 'General confusion' string
+    // in the event service anyway, but returning it here means the resolver
+    // never returns a label that could come from a previous session).
+    expect(r.source).toBe('no_session')
+    expect(r.label).toBe('General Confusion')
   })
 })
 
@@ -220,7 +250,7 @@ describe('resolveTopicsForOffsets (batch)', () => {
   })
 
   it('resolves multiple offsets in one call', async () => {
-    const r = await resolveTopicsForOffsets({ roomId: room._id, offsets: [30000, 90000, 200000] })
+    const r = await resolveTopicsForOffsets({ roomId: room._id, offsets: [30000, 90000, 200000], roomStartedAt: room.roomStartedAt })
     expect(r.get(30000).label).toBe('Intro')
     expect(r.get(90000).label).toBe('Phase 1')
     expect(r.get(200000).source).toBe('latest_marker')
@@ -236,7 +266,7 @@ describe('annotateSpikesWithTopics', () => {
       { recordingOffsetMs: 90000, count: 5 },
       { recordingOffsetMs: 200000, count: 3 }
     ]
-    const annotated = await annotateSpikesWithTopics({ roomId: room._id, spikes })
+    const annotated = await annotateSpikesWithTopics({ roomId: room._id, spikes, roomStartedAt: room.roomStartedAt })
     expect(annotated[0].topic.label).toBe('Intro')
     expect(annotated[1].topic.label).toBe('Phase 1')
     expect(annotated[2].topic.label).toBe('Phase 1') // latest_marker fallback (offset past endMs)
