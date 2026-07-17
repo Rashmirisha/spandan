@@ -6,6 +6,7 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import { API_URL } from '../config.js'
+import { fetchAllRoomQuestions } from '../services/questionService'
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -43,12 +44,9 @@ function RoomResultsPage() {
         setRoom(roomData.room || roomData)
       }
 
-      // Fetch questions for this room
-      const qRes = await fetch(`${API_URL}/questions?roomId=${roomId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
-      const qData = await qRes.json()
-      const roomQuestions = qData.questions || []
+      // Fetch ALL questions for this room (pages past the API's 50/page cap), so the teacher's
+      // results show the true question count and every question's stats, not just the first 50.
+      const roomQuestions = await fetchAllRoomQuestions(roomId)
 
       if (user?.role === 'student') {
         // Student: fetch their own responses (includes questions with answers)

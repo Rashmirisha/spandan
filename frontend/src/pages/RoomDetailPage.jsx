@@ -14,7 +14,7 @@ import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
-import { requestQuestionGeneration } from '../services/questionService'
+import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
 import { API_URL } from '../config.js'
 
 function RoomDetailPage() {
@@ -484,17 +484,10 @@ function RoomDetailPage() {
 
   const loadQuestions = async (rid) => {
     try {
-      const response = await fetch(`${API_URL}/questions?roomId=${rid}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-      if (response.ok) {
-        const data = await response.json()
-        if (data.questions) {
-          setGeneratedQuestions(data.questions)
-        }
-      }
+      // Load ALL questions (pages past the API's 50/page cap) so large rooms show every question,
+      // not just the first 50.
+      const questions = await fetchAllRoomQuestions(rid)
+      setGeneratedQuestions(questions)
       // Also load answer counts
       const countsRes = await fetch(`${API_URL}/responses/counts/${rid}`, {
         headers: { 'Authorization': `Bearer ${token}` }
