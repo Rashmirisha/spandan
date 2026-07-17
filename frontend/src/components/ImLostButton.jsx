@@ -64,11 +64,31 @@ export default function ImLostButton ({ roomId, roomCode, getCurrentSegment, dis
         sounds.deny()
       }
     }
+    // New poll → reset cooldown so the button is immediately clickable.
+    // Without this, a student who pressed Confused on Poll #1 would still
+    // be locked out for up to 30s when Poll #2 starts. The server has
+    // already cleared its anti-spam window via markPollStarted() in the
+    // 'new_question'/'question:start' handlers, so clearing the client
+    // cooldown keeps the two layers in sync.
+    const onPollReset = () => {
+      if (cooldownRef.current) {
+        clearInterval(cooldownRef.current)
+        cooldownRef.current = null
+      }
+      setCooldownMs(0)
+      setStatus('idle')
+    }
     socket.on('doubt:confirmed', onConfirmed)
     socket.on('doubt:ignored', onIgnored)
+    socket.on('new_question', onPollReset)
+    socket.on('question:started', onPollReset)
+    socket.on('poll:reset', onPollReset)
     return () => {
       socket.off('doubt:confirmed', onConfirmed)
       socket.off('doubt:ignored', onIgnored)
+      socket.off('new_question', onPollReset)
+      socket.off('question:started', onPollReset)
+      socket.off('poll:reset', onPollReset)
     }
   }, [socket, startCooldown])
 

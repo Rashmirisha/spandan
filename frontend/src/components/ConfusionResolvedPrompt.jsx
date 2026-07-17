@@ -34,6 +34,11 @@ export default function ConfusionResolvedPrompt ({ roomId }) {
         receivedAt: Date.now()
       })
       setResponded(null)
+      // BUG FIX (recovery poll, second iteration): the success path of
+      // respond() never resets `submitting`, so it stays true forever
+      // and disables the buttons on every subsequent "Are you clear now?"
+      // prompt. Force-reset here so a new prompt is always interactive.
+      setSubmitting(false)
       try { sounds.tap() } catch {}
     }
     socket.on('confusion:resolved', onResolved)
@@ -55,7 +60,12 @@ export default function ConfusionResolvedPrompt ({ roomId }) {
       await confusionApi.submitFeedback(prompt.eventId, answer)
       setResponded(answer)
       try { sounds.tap() } catch {}
-      // Fade out after a short pause so the user sees their pick
+      // Fade out after a short pause so the user sees their pick.
+      // BUG FIX (recovery poll, second iteration): `submitting` must be
+      // reset on the success path too -- otherwise it stays true forever
+      // and the buttons on every subsequent prompt stay disabled, even
+      // though the popup technically re-appears for a new event.
+      setSubmitting(false)
       setTimeout(() => setPrompt(null), 1400)
     } catch (e) {
       console.error('[ConfusionResolvedPrompt] feedback failed:', e?.message)

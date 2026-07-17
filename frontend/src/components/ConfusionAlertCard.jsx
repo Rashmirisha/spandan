@@ -121,11 +121,37 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
     socket.on('confusion:closed', onClosed)
     socket.on('confusion:resolved', onResolved)
     socket.on('confusion:feedback', onFeedback)
+    // Poll boundary: when the teacher starts a new poll, clear all
+    // dashboard state so the new poll starts fresh. The backend has
+    // already closed any active ConfusionEvent and cleared its feedback
+    // tally -- this listener just mirrors that on the UI immediately,
+    // so we don't have to wait for the next poll interval (8s) to re-render.
+    const onPollReset = (data) => {
+      if (data && String(data.roomId) !== String(roomId)) return
+      setEvent(null)
+      setLatest(null)
+      setFeedbackTally({
+        understood: 0,
+        stillConfused: 0,
+        expectedRespondents: 0,
+        needsMoreExplanation: false,
+        autoClosed: false,
+        reopenedCount: 0
+      })
+      prevCountRef.current = 0
+      setDisplayCount(0)
+    }
+    socket.on('new_question', onPollReset)
+    socket.on('question:started', onPollReset)
+    socket.on('poll:reset', onPollReset)
     return () => {
       socket.off('confusion:update', onUpdate)
       socket.off('confusion:closed', onClosed)
       socket.off('confusion:resolved', onResolved)
       socket.off('confusion:feedback', onFeedback)
+      socket.off('new_question', onPollReset)
+      socket.off('question:started', onPollReset)
+      socket.off('poll:reset', onPollReset)
     }
   }, [socket, roomId])
 

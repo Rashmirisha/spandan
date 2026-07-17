@@ -263,7 +263,26 @@ io.on('connection', (socket) => {
   })
 
   // Question events
-  socket.on('question:start', (data) => {
+  socket.on('question:start', async (data) => {
+    // Poll boundary: close any active ConfusionEvent + clear its feedback
+    // tally for this room, and update the anti-spam marker so prior signals
+    // no longer block clicks on this new poll. Best-effort — we still emit
+    // the event even if the reset fails so the poll UX is never blocked.
+    if (data && data.roomCode) {
+      try {
+        const { resetPollStateForRoom } = await import('./services/confusionEventService.js')
+        const { markPollStarted } = await import('./services/doubtService.js')
+        const { Room } = await import('./models/index.js')
+        const room = await Room.findOne({ code: data.roomCode }).select('_id').lean()
+        if (room) {
+          await resetPollStateForRoom(room._id)
+          markPollStarted(room._id)
+          io.to(data.roomCode).emit('poll:reset', { roomId: String(room._id) })
+        }
+      } catch (e) {
+        console.warn('[socket] poll reset on question:start failed:', e.message)
+      }
+    }
     io.to(data.roomCode).emit('question:started', {
       questionId: data.questionId,
       question: data.question,
@@ -280,11 +299,25 @@ io.on('connection', (socket) => {
   })
 
   // New question from teacher (manually created)
-  socket.on('new_question', (data) => {
+  socket.on('new_question', async (data) => {
     console.log('New question received from teacher:', data.question?.question?.substring(0, 50))
     const roomCode = data.roomCode
     const question = data.question
     if (roomCode && question) {
+      // Same poll-boundary reset as 'question:start' — see comment above.
+      try {
+        const { resetPollStateForRoom } = await import('./services/confusionEventService.js')
+        const { markPollStarted } = await import('./services/doubtService.js')
+        const { Room } = await import('./models/index.js')
+        const room = await Room.findOne({ code: roomCode }).select('_id').lean()
+        if (room) {
+          await resetPollStateForRoom(room._id)
+          markPollStarted(room._id)
+          io.to(roomCode).emit('poll:reset', { roomId: String(room._id) })
+        }
+      } catch (e) {
+        console.warn('[socket] poll reset on new_question failed:', e.message)
+      }
       io.to(roomCode).emit('new_question', question)
     } else {
       console.error('new_question event missing roomCode or question:', data)

@@ -25,6 +25,29 @@ export function hashStudent (userId, salt) {
 
 const ANTI_SPAM_MS = 30 * 1000 // one signal per student per 30s, regardless of segment
 
+// Per-room marker for the most-recent poll start. Anti-spam only counts
+// signals that landed AFTER this marker, so a new poll gives every student
+// a fresh signal slot. Keyed by String(roomId) for cheap Map lookup.
+const lastPollStartedAtByRoom = new Map()
+
+/**
+ * Update the "last poll started" marker for a room. Called by the socket
+ * 'new_question' / 'question:start' handlers right before they broadcast.
+ * After this call, any prior DoubtSignal in this room is no longer eligible
+ * to satisfy the anti-spam check (so students can press Confused again on
+ * the new poll).
+ */
+export function markPollStarted (roomId) {
+  lastPollStartedAtByRoom.set(String(roomId), Date.now())
+}
+
+/**
+ * For tests / smoke scripts: read the marker without mutating it.
+ */
+export function getLastPollStartedAt (roomId) {
+  return lastPollStartedAtByRoom.get(String(roomId)) || null
+}
+
 /**
  * Record a doubt signal. Returns { ok, signal, reason } — reason is set when
  * the call was deliberately ignored (anti-spam or already-retracted-then-readded).
@@ -40,12 +63,22 @@ export async function recordDoubt ({ roomId, userId, segmentIndex, transcriptOff
   const salt = room.doubtSalt || (await ensureRoomSalt(roomId))
   const studentHash = hashStudent(userId, salt)
 
-  // Anti-spam: ignore if the same student signaled within ANTI_SPAM_MS
+  // Anti-spam: scope to the most-recent poll. A signal only blocks a re-click
+  // if BOTH:
+  //   (a) it landed within the last ANTI_SPAM_MS, AND
+  //   (b) it landed AFTER the most-recent poll-start marker for this room.
+  // The poll marker is set when the teacher starts a new poll (see
+  // markPollStarted + the socket 'new_question'/'question:start' handlers).
+  // So a click on Poll #2 is never blocked by a click on Poll #1, even if
+  // Poll #1 ended <30s ago.
+  const pollStartedAtMs = lastPollStartedAtByRoom.get(String(roomId)) || 0
   const recent = await DoubtSignal.findOne({
     roomId,
     studentHash,
     retracted: false,
-    createdAt: { $gt: new Date(Date.now() - ANTI_SPAM_MS) }
+    createdAt: {
+      $gt: new Date(Math.max(Date.now() - ANTI_SPAM_MS, pollStartedAtMs))
+    }
   }).sort({ createdAt: -1 })
   if (recent) return { ok: false, reason: 'anti_spam', retryAfterMs: ANTI_SPAM_MS }
 

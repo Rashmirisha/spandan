@@ -312,6 +312,38 @@ export async function closeAllActiveForRoom (roomId) {
 }
 
 /**
+ * Poll lifecycle reset — called when a new poll starts.
+ *
+ * Closes any active ConfusionEvents for this room (so the next student
+ * press starts a fresh event) and clears their feedbackTallies so the
+ * teacher dashboard's recovery counters start from zero on the new poll.
+ *
+ * Returns the IDs of the events that were closed (for telemetry).
+ *
+ * This is the keystone fix that decouples poll lifecycle from confusion-
+ * event lifecycle: without it, Poll #2 would reuse Poll #1's ConfusionEvent
+ * and the recovery tally would persist into Poll #2's dashboard.
+ */
+export async function resetPollStateForRoom (roomId) {
+  if (!mongoose.Types.ObjectId.isValid(String(roomId))) return []
+  const active = await ConfusionEvent.find({ roomId, status: 'active' })
+    .select('_id')
+    .lean()
+  if (active.length === 0) return []
+  const ids = active.map(e => String(e._id))
+  await ConfusionEvent.updateMany(
+    { _id: { $in: ids } },
+    { $set: { status: 'closed', closedAt: new Date(), pollResetAt: new Date() } }
+  )
+  // Drop any in-memory feedback tallies for these events so the next poll
+  // starts with a fresh { understood: 0, stillConfused: 0 } reading.
+  for (const id of ids) {
+    feedbackTallies.delete(id)
+  }
+  return ids
+}
+
+/**
  * RESOLVED PROMPT: teacher-initiated resolve of a specific confusion event.
  * Sets status='closed' if currently 'active'. Idempotent.
  *
@@ -391,6 +423,7 @@ export default {
   listForRoom,
   closeEvent,
   closeAllActiveForRoom,
+  resetPollStateForRoom,
   resolveEventByTeacher,
   reopenEvent,
   recordFeedback,
