@@ -149,15 +149,16 @@ function RoomDetailPage() {
     }
   }, [socket])
 
-  // Phase 1: answer counts now arrive (absolute, server-computed) inside the throttled
-  // 'leaderboard:updated' payload, instead of a per-response 'response:new' increment.
+  // Answer counts arrive live (absolute, server-computed) on the throttled 'counts:updated'
+  // event. This is now separate from the ranked leaderboard, which is deferred to a quiet-
+  // debounce so its heavy recompute stays out of the answer burst.
   useEffect(() => {
     if (!socket) return
-    const handleLiveUpdate = (payload) => {
+    const handleCounts = (payload) => {
       if (payload?.counts) setAnswerCounts(payload.counts)
     }
-    socket.on('leaderboard:updated', handleLiveUpdate)
-    return () => socket.off('leaderboard:updated', handleLiveUpdate)
+    socket.on('counts:updated', handleCounts)
+    return () => socket.off('counts:updated', handleCounts)
   }, [socket])
 
   // Listen for question launch events to show timer to teacher
