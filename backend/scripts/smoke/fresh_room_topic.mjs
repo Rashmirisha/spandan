@@ -53,8 +53,8 @@ console.log('Session started:', start.status, '|', start.body?.roomStartedAt ?? 
 
 // Now insert test data via Mongo
 await mongoose.connect('mongodb://localhost:27017/spandan')
-const { Transcript } = await import('./src/models/index.js')
-const { Room } = await import('./src/models/index.js')
+const { Transcript } = await import('../../src/models/index.js')
+const { Room } = await import('../../src/models/index.js')
 const roomDoc = await Room.findById(roomId).select('roomStartedAt').lean()
 console.log('roomStartedAt:', roomDoc?.roomStartedAt ?? 'NULL!')
 
@@ -95,11 +95,14 @@ const active = await req('GET', `/api/confusion/room/${roomId}/active`, null, `B
 console.log('\n=== ACTIVE EVENT ===')
 console.log('Status:', active.status)
 if (active.body?.event) {
-  console.log('  topicLabel:', JSON.stringify(active.body.event.topicLabel))
-  console.log('  topicSource:', JSON.stringify(active.body.event.topicSource))
+  // Active event shape: { topic: { label, subtopic, source, markerId }, ... }
+  const topicLabel = active.body.event.topic?.label ?? active.body.event.topicLabel ?? ''
+  const topicSource = active.body.event.topic?.source ?? active.body.event.topicSource ?? 'none'
+  console.log('  topicLabel:', JSON.stringify(topicLabel))
+  console.log('  topicSource:', JSON.stringify(topicSource))
   console.log('  confusedStudentCount:', active.body.event.confusedStudentCount)
   console.log('\n=== RESULT ===')
-  const label = active.body.event.topicLabel || ''
+  const label = topicLabel
   if (label.toLowerCase().includes('photosynthesis')) {
     console.log('❌ FAIL: photosynthesis leaked into the new room')
     process.exit(1)

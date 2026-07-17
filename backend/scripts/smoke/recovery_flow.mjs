@@ -87,7 +87,7 @@ const main = async () => {
   log('--- Test 6: malformed eventId (what frontend would send if card._id is undefined) ---')
   const broken = await req('POST', '/api/confusion/event/undefined/request-feedback', { cookie: tCookie })
   log('Status:', broken.status, 'Body[:400]:', (broken.body || '').slice(0, 400))
-  require('fs').writeFileSync('C:/Users/ajith/.openclaw/workspace/smoke_out.txt', out.join('\n'))
+  await import('fs').then(fs => fs.writeFileSync('C:/Users/ajith/.openclaw/workspace/smoke_out.txt', out.join('\n')))
   log('Done.')
 }
 main().catch(e => { console.error('FATAL', e); process.exit(1) })
