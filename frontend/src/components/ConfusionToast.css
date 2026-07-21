@@ -1,0 +1,194 @@
+/* ConfusionToast — top-right toast stack for student "I'm Lost" signals */
+
+.confusion-toast-stack {
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  pointer-events: none;
+}
+
+.confusion-toast {
+  pointer-events: auto;
+  background: var(--card-bg, #ffffff);
+  color: var(--text-primary, #1f2937);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18), 0 2px 6px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+  font-family: inherit;
+  font-size: 14px;
+  animation: confusion-toast-in 0.32s cubic-bezier(.2,.8,.4,1);
+  border-left: 4px solid #3b82f6;
+  position: relative;
+}
+
+@keyframes confusion-toast-in {
+  from { opacity: 0; transform: translateX(40px) scale(0.98); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+.confusion-toast--green  { border-left-color: #22c55e; }
+.confusion-toast--yellow { border-left-color: #eab308; }
+.confusion-toast--red    { border-left-color: #ef4444; }
+.confusion-toast--idle   { border-left-color: #94a3b8; }
+
+.confusion-toast__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+
+.confusion-toast__icon {
+  font-size: 18px;
+  line-height: 1;
+  animation: confusion-toast-bell 0.6s ease-out;
+}
+
+@keyframes confusion-toast-bell {
+  0%   { transform: rotate(0deg); }
+  20%  { transform: rotate(14deg); }
+  40%  { transform: rotate(-10deg); }
+  60%  { transform: rotate(6deg); }
+  80%  { transform: rotate(-3deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.confusion-toast__title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  color: var(--text-primary, #111827);
+}
+
+.confusion-toast__close {
+  background: transparent;
+  border: 0;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  color: var(--text-secondary, #6b7280);
+  transition: color 0.15s;
+}
+.confusion-toast__close:hover { color: var(--text-primary, #111827); }
+
+.confusion-toast__body {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confusion-toast__topic {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #1f2937);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confusion-toast__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.confusion-toast__count {
+  font-size: 13px;
+  color: var(--text-secondary, #4b5563);
+}
+.confusion-toast__count strong {
+  font-size: 16px;
+  color: var(--text-primary, #111827);
+  font-weight: 700;
+}
+
+.confusion-toast__severity {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.confusion-toast__severity--green  { background: #dcfce7; color: #166534; }
+.confusion-toast__severity--yellow { background: #fef9c3; color: #854d0e; }
+.confusion-toast__severity--red    { background: #fee2e2; color: #991b1b; }
+.confusion-toast__severity--idle   { background: #f1f5f9; color: #475569; }
+
+.confusion-toast__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+  padding-top: 4px;
+  border-top: 1px solid var(--border-color, rgba(0,0,0,0.06));
+  position: relative;
+}
+
+.confusion-toast__room {
+  font-weight: 500;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confusion-toast__progress {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  width: 100%;
+  transform-origin: left;
+  animation: confusion-toast-progress 6s linear forwards;
+  pointer-events: none;
+}
+
+@keyframes confusion-toast-progress {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+
+/* Dark theme overrides */
+[data-theme='dark'] .confusion-toast {
+  background: #1e293b;
+  color: #f1f5f9;
+}
+[data-theme='dark'] .confusion-toast__title,
+[data-theme='dark'] .confusion-toast__topic {
+  color: #f1f5f9;
+}
+[data-theme='dark'] .confusion-toast__close { color: #94a3b8; }
+[data-theme='dark'] .confusion-toast__close:hover { color: #f1f5f9; }
+[data-theme='dark'] .confusion-toast__count { color: #cbd5e1; }
+[data-theme='dark'] .confusion-toast__count strong { color: #f8fafc; }
+[data-theme='dark'] .confusion-toast__severity--green  { background: #14532d; color: #bbf7d0; }
+[data-theme='dark'] .confusion-toast__severity--yellow { background: #713f12; color: #fde68a; }
+[data-theme='dark'] .confusion-toast__severity--red    { background: #7f1d1d; color: #fecaca; }
+[data-theme='dark'] .confusion-toast__severity--idle   { background: #334155; color: #cbd5e1; }
+[data-theme='dark'] .confusion-toast__foot {
+  color: #94a3b8;
+  border-top-color: rgba(255,255,255,0.06);
+}
+
+/* Mobile */
+@media (max-width: 600px) {
+  .confusion-toast-stack {
+    top: auto;
+    bottom: 16px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+  }
+}

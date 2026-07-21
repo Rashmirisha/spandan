@@ -308,22 +308,41 @@ function DashboardPage() {
                         {room.questionCount || 0} questions
                       </p>
                     </div>
-                    <button
-                      onClick={() => navigate(`/teacher/room/${room._id}`)}
-                      style={{
-                        marginTop: '16px',
-                        padding: '10px 16px',
-                        background: '#3b82f6',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontSize: '13px',
-                        fontWeight: '500',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Manage →
-                    </button>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                      <button
+                        onClick={() => navigate(`/teacher/room/${room._id}`)}
+                        style={{
+                          flex: 1,
+                          padding: '10px 16px',
+                          background: '#3b82f6',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Manage →
+                      </button>
+                      <button
+                        onClick={() => navigate(`/teacher/analytics/${room._id}`)}
+                        title="Open live confusion analytics"
+                        style={{
+                          flex: 1,
+                          padding: '10px 16px',
+                          background: 'linear-gradient(135deg, #1e3a8a, #3b82f6)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        📊 Analytics
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

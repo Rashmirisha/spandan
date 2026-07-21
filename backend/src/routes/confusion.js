@@ -1,4 +1,5 @@
 import express from 'express'
+import crypto from 'crypto'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { Room } from '../models/index.js'
 import {
@@ -9,7 +10,10 @@ import {
   resolveEventByTeacher,
   recordFeedback,
   reopenEvent,
-  getFeedbackTally
+  getFeedbackTally,
+  openFeedbackRound,
+  recordFeedbackPersistent,
+  completeFeedbackRound
 } from '../services/confusionEventService.js'
 import { ConfusionEvent } from '../models/index.js'
 import {
@@ -155,18 +159,33 @@ router.post('/event/:eventId/request-feedback', authenticate, authorize('teacher
     if (String(room.teacher) !== String(req.user._id) && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, error: 'Only the room teacher can request feedback' })
     }
+    // Open the persistent feedback round so stats survive backend restarts.
+    const fresh = await openFeedbackRound(eventId)
+    const expectedRespondents = fresh?.feedbackStats?.expectedRespondents
+      ?? evt.confusedStudentCount
+      ?? (Array.isArray(evt.studentIds) ? evt.studentIds.length : 0)
     const io = req.app.get('io')
     if (io && room.code) {
       const payload = {
         roomId: String(evt.roomId),
         eventId: String(evt._id),
         topic: evt.topicLabel || 'General Confusion',
-        expectedRespondents: evt.confusedStudentCount || (evt.studentIds ? evt.studentIds.length : 0)
+        expectedRespondents,
+        requestedAt: fresh?.feedbackStats?.requestedAt || new Date().toISOString()
       }
       console.log('[confusion] request-feedback emit confusion:resolved to room', room.code, payload)
       io.to(room.code).emit('confusion:resolved', payload)
+      // ALSO emit confusion:feedback:request -- a dedicated event so the
+      // teacher dashboard's FeedbackCollector card can hydrate without
+      // confusing it with the student-side popup.
+      io.to(room.code).emit('confusion:feedback:request', payload)
     }
-    res.json({ success: true, event: formatForClient(evt) })
+    res.json({
+      success: true,
+      event: fresh ? formatForClient(fresh) : formatForClient(evt),
+      feedbackStats: fresh?.feedbackStats || null,
+      expectedRespondents
+    })
   } catch (err) {
     console.error('[confusion] request-feedback error:', err)
     res.status(500).json({ success: false, error: 'Failed to request feedback' })
@@ -174,12 +193,61 @@ router.post('/event/:eventId/request-feedback', authenticate, authorize('teacher
 })
 
 /**
- * Backwards-compat alias: old /resolve route now behaves like /request-feedback.
- * Keeps any client that still POSTs to the old endpoint working.
+ * FORCE RESOLVE: teacher clicks "Mark Resolved" — close the event IMMEDIATELY
+ * without waiting for student feedback. Emits confusion:closed so all
+ * connected dashboards remove it from the Live Confusion Overview and
+ * move it into Recent Confusion Events with status='closed'.
+ *
+ * POST /api/confusion/event/:eventId/resolve
+ * - Auth: teacher only (must own the room)
+ * - Effect: close the event in the DB, emit confusion:closed to the room code
+ *
+ * This is intentionally DIFFERENT from /request-feedback:
+ *   /request-feedback  -> keep event active, prompt students
+ *   /resolve           -> close the event NOW (force)
  */
 router.post('/event/:eventId/resolve', authenticate, authorize('teacher', 'admin'), async (req, res) => {
-  req.url = req.url.replace('/resolve', '/request-feedback')
-  return router.handle(req, res, () => {})
+  try {
+    const { eventId } = req.params
+    if (!ConfusionEvent || !ConfusionEvent.findById) {
+      return res.status(500).json({ success: false, error: 'ConfusionEvent model unavailable' })
+    }
+    const evt = await ConfusionEvent.findById(eventId)
+    if (!evt) return res.status(404).json({ success: false, error: 'Confusion event not found' })
+    if (evt.status === 'closed') {
+      // Idempotent — already closed. Return the existing event.
+      return res.json({ success: true, event: formatForClient(evt.toObject ? evt.toObject() : evt), alreadyClosed: true })
+    }
+    const room = await Room.findById(evt.roomId).select('code teacher').lean()
+    if (!room) return res.status(404).json({ success: false, error: 'Room not found' })
+    if (String(room.teacher) !== String(req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Only the room teacher can resolve' })
+    }
+
+    // Close the event in the DB
+    evt.status = 'closed'
+    evt.closedAt = new Date()
+    await evt.save()
+
+    const closed = formatForClient(evt.toObject())
+
+    // Broadcast so every connected teacher dashboard removes the live card
+    const io = req.app.get('io')
+    if (io && room.code) {
+      io.to(room.code).emit('confusion:closed', {
+        roomId: String(evt.roomId),
+        eventId: String(evt._id),
+        reason: 'teacher_resolved',
+        event: closed
+      })
+    }
+
+    console.log('[confusion] /resolve closed event', String(evt._id), 'for room', room.code)
+    res.json({ success: true, event: closed })
+  } catch (err) {
+    console.error('[confusion] resolve error:', err)
+    res.status(500).json({ success: false, error: 'Failed to resolve confusion event' })
+  }
 })
 
 /**
@@ -200,7 +268,19 @@ router.post('/event/:eventId/feedback', authenticate, async (req, res) => {
     if (!['understood', 'still_confused'].includes(answer)) {
       return res.status(400).json({ success: false, error: 'answer must be "understood" or "still_confused"' })
     }
-    const tally = recordFeedback(eventId, answer)
+    // Persist the answer against the event's feedbackStats (idempotent by student).
+    // Also keep the legacy in-memory tally updated so existing listeners don't drift.
+    // Compute a per-student anonymous hash so we can dedupe across sessions.
+    const studentHash = computeStudentHash(req.user)
+    const persistent = await recordFeedbackPersistent(eventId, {
+      studentId: req.user?._id,
+      studentHash,
+      answer
+    })
+    const tally = persistent.isNew
+      ? recordFeedback(eventId, answer)
+      : getFeedbackTally(eventId)
+
     let evt = null
     if (answer === 'still_confused') {
       // still_confused: keep the event active. No auto-close.
@@ -213,19 +293,30 @@ router.post('/event/:eventId/feedback', authenticate, async (req, res) => {
     }
     // RECOVERY FLOW: compute expected respondents. If tally.understood has
     // reached the expected count, auto-close the event.
-    const expectedRespondents = evt.confusedStudentCount || (evt.studentIds ? evt.studentIds.length : tally.understood + tally.stillConfused)
+    const fs = evt.feedbackStats || {}
+    const expectedRespondents = fs.expectedRespondents
+      || evt.confusedStudentCount
+      || (evt.studentIds ? evt.studentIds.length : tally.understood + tally.stillConfused)
     let autoClosed = false
     if (answer === 'understood' && tally.understood >= expectedRespondents && tally.stillConfused === 0) {
       const closed = await resolveEventByTeacher(eventId)
       if (closed) {
         evt = closed
         autoClosed = true
+        await completeFeedbackRound(eventId, { status: 'completed' })
       }
     }
     const room = await Room.findById(evt.roomId).select('code').lean()
     const io = req.app.get('io')
     if (io && room?.code) {
       const needsMoreExplanation = tally.stillConfused > 0
+      const fsPayload = {
+        status: fs.status || (autoClosed ? 'completed' : 'pending'),
+        expectedRespondents,
+        understood: tally.understood,
+        stillConfused: tally.stillConfused,
+        responseCount: Array.isArray(fs.responses) ? fs.responses.length : (tally.understood + tally.stillConfused)
+      }
       io.to(room.code).emit('confusion:feedback', {
         roomId: String(evt.roomId),
         eventId: String(evt._id),
@@ -237,7 +328,8 @@ router.post('/event/:eventId/feedback', authenticate, async (req, res) => {
         autoClosed,
         reopened: answer === 'still_confused' && !autoClosed,
         reopenedCount: evt.reopenedCount || 0,
-        topic: evt.topic
+        topic: evt.topic,
+        feedbackStats: fsPayload
       })
       if (autoClosed) {
         io.to(room.code).emit('confusion:closed', {
@@ -254,12 +346,34 @@ router.post('/event/:eventId/feedback', authenticate, async (req, res) => {
       stillConfused: tally.stillConfused,
       expectedRespondents,
       needsMoreExplanation: tally.stillConfused > 0,
-      autoClosed
+      autoClosed,
+      feedbackStats: {
+        status: persistent.completed ? 'completed' : 'pending',
+        expectedRespondents,
+        understoodCount: tally.understood,
+        stillConfusedCount: tally.stillConfused,
+        responseCount: tally.understood + tally.stillConfused
+      }
     })
   } catch (err) {
     console.error('[confusion] feedback error:', err)
     res.status(500).json({ success: false, error: 'Failed to record feedback' })
   }
 })
+
+/**
+ * Tiny helper: derive a 64-char hex HMAC hash from the authenticated user.
+ * We use it as an anonymous identifier so we can dedupe student responses
+ * per round without leaking user data. Same input + same salt => same hash.
+ */
+function computeStudentHash (user) {
+  if (!user) return ''
+  // Use a per-process salt so hashes are not stable across deployments.
+  // (Acceptable for a demo-grade anonymous id; for prod this should be
+  // an HMAC with a stable salt stored in env.)
+  const salt = process.env.STUDENT_HASH_SALT || 'spandan-feedback-salt'
+  const id = user._id ? String(user._id) : (user.id || user.email || '')
+  return crypto.createHmac('sha256', salt).update(id).digest('hex')
+}
 
 export default router

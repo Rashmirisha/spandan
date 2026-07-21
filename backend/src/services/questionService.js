@@ -4,6 +4,7 @@ import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import Room from '../models/Room.js'
 import { config, AI_PROVIDERS } from '../config.js'
+import { generateLocalQuestions } from './localQuestionGenerator.js'
 
 // Re-export for convenience
 export { AI_PROVIDERS }
@@ -415,8 +416,13 @@ async function generateWithMiniMax(prompt) {
   // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
   const text = content || reasoning
   if (!text) {
+    // Guard: JSON.stringify(undefined) === undefined, so .slice would throw. Stringify-safe raw.
+    // Also log the top-level `data` so we can see API errors (401, quota, etc.) when `choice` is missing.
+    const rawChoice = choice !== undefined ? JSON.stringify(choice) : '<no choice object>'
+    const rawTop = data !== undefined ? JSON.stringify(data) : '<no data object>'
     console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      ' raw choice: ' + rawChoice.slice(0, 1500) +
+      ' raw data: ' + rawTop.slice(0, 1500))
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
   }
@@ -526,42 +532,102 @@ export async function generateQuestions(transcript, cfg) {
   }
 
   // Use provided questionTypeMix or generate default based on numQuestions
-  const questionTypes = questionTypeMix 
+  const questionTypes = questionTypeMix
     ? generateFromMix(questionTypeMix, numQuestions)
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
-  console.log(`Generating ${numQuestions} questions with ${provider} from a ${transcript.length}-char transcript...`)
+  // --- Provider selection --------------------------------------------------
+  // Pick the first provider that actually has a non-empty API key configured.
+  // If the caller asked for a specific provider but its key is missing, we
+  // fall back to the first available one and warn loudly — the user gets
+  // questions anyway instead of an empty result.
+  const providerKeys = {
+    minimax: config.minimaxApiKey,
+    openai: config.openaiApiKey,
+    anthropic: config.anthropicApiKey,
+    google: config.googleApiKey
+  }
+  const availableProviders = Object.entries(providerKeys)
+    .filter(([, k]) => k && k.trim().length > 0)
+    .map(([name]) => name)
 
-  let responseText
-
-  switch (provider) {
-    case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
-      break
-    case 'openai':
-      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
-      responseText = await generateWithOpenAI(prompt)
-      break
-    case 'anthropic':
-      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
-      responseText = await generateWithAnthropic(prompt)
-      break
-    case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
-      responseText = await generateWithGoogle(prompt)
-      break
-    default:
-      throw new Error(`Unknown provider: ${provider}`)
+  let chosenProvider = provider
+  if (providerKeys[provider] && providerKeys[provider].trim().length > 0) {
+    // requested provider has a key — use it
+  } else if (availableProviders.length > 0) {
+    chosenProvider = availableProviders[0]
+    console.warn(`[gen] requested provider '${provider}' has no API key configured; falling back to '${chosenProvider}'`)
+  } else {
+    // No provider has a key — skip straight to local fallback
+    console.warn(`[gen] no AI provider keys configured (asked for '${provider}'); using local heuristic fallback`)
   }
 
-  console.log(`[gen] ${provider} returned ${responseText?.length || 0} chars; preview: ${JSON.stringify((responseText || '').slice(0, 140))}`)
-  const questions = parseQuestions(responseText, questionTypes)
+  // --- Try the AI provider -------------------------------------------------
+  let responseText = null
+  let providerError = null
+  if (chosenProvider && providerKeys[chosenProvider] && providerKeys[chosenProvider].trim().length > 0) {
+    console.log(`Generating ${numQuestions} questions with ${chosenProvider} from a ${transcript.length}-char transcript...`)
+    try {
+      switch (chosenProvider) {
+        case 'minimax':
+          responseText = await generateWithMiniMax(prompt)
+          break
+        case 'openai':
+          responseText = await generateWithOpenAI(prompt)
+          break
+        case 'anthropic':
+          responseText = await generateWithAnthropic(prompt)
+          break
+        case 'google':
+          responseText = await generateWithGoogle(prompt)
+          break
+        default:
+          throw new Error(`Unknown provider: ${chosenProvider}`)
+      }
+      console.log(`[gen] ${chosenProvider} returned ${responseText?.length || 0} chars; preview: ${JSON.stringify((responseText || '').slice(0, 140))}`)
+    } catch (err) {
+      providerError = err
+      console.error(`[gen] ${chosenProvider} call failed: ${err.message}`)
+    }
+  }
+
+  let questions = []
+  if (responseText && responseText.trim().length > 0) {
+    questions = parseQuestions(responseText, questionTypes)
+  }
+
+  // --- Local fallback ------------------------------------------------------
+  // If we got nothing usable from the AI (no key, call failed, empty response,
+  // or parser found zero questions), fall back to the deterministic local
+  // generator. This guarantees the demo always produces questions as long as
+  // the transcript contains any factual sentences.
   if (questions.length === 0) {
-    console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
-  } else {
-    console.log(`Generated ${questions.length} questions successfully`)
+    const reason = providerError
+      ? `provider '${chosenProvider}' error: ${providerError.message}`
+      : (responseText === null
+          ? `provider '${chosenProvider}' not configured`
+          : `provider '${chosenProvider}' returned ${responseText?.length || 0} chars and parseQuestions produced 0`)
+    console.warn(`[gen] AI path failed (${reason}); falling back to local heuristic generator`)
+
+    // Translate questionTypes (MCQ/TF/MSQ) into local types (MCQ/TF/SA).
+    // Local doesn't have MSQ; SA (short-answer) is the closest equivalent.
+    const localTypes = [...new Set(questionTypes.map(t => t === 'MSQ' ? 'SA' : t))]
+    if (localTypes.length === 0) localTypes.push('MCQ')
+
+    try {
+      questions = generateLocalQuestions(transcript, {
+        questionCount: numQuestions,
+        difficulty,
+        types: localTypes
+      })
+      console.log(`[gen:local] generated ${questions.length} local-heuristic questions`)
+    } catch (localErr) {
+      console.error(`[gen:local] local heuristic failed: ${localErr.message}`)
+      // If we have a provider error to surface, throw it; otherwise throw the local error
+      if (providerError) throw providerError
+      throw localErr
+    }
   }
 
   return questions

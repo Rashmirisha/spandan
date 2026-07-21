@@ -40,7 +40,7 @@ const confusionEventSchema = new mongoose.Schema({
   },
   topicSource: {
     type: String,
-    enum: ['marker', 'auto', 'transcript', 'latest_marker', 'latest_transcript', 'student_utterance', 'fallback', 'no_session', 'none'],
+    enum: ['marker', 'auto', 'transcript', 'latest_marker', 'latest_transcript', 'student_utterance', 'fallback', 'no_session', 'room_title', 'none'],
     default: 'none'
   },
   // Anchor wall-clock ms when the first signal arrived
@@ -103,6 +103,35 @@ const confusionEventSchema = new mongoose.Schema({
     type: Number,
     default: 0,
     min: 0
+  },
+  // RECOVERY FLOW PERSISTENT STATS (2026-07-21):
+  //   When the teacher clicks "Request Feedback", we record what was asked
+  //   and accumulate the per-student responses. This survives backend
+  //   restarts so the Recent Confusion Events list can show past tallies.
+  feedbackStats: {
+    // Whether a feedback round is currently in flight
+    status: {
+      type: String,
+      enum: ['none', 'pending', 'completed', 'timed_out'],
+      default: 'none'
+    },
+    // How many students we expected to respond (= confusedStudentCount at request time)
+    expectedRespondents: { type: Number, default: 0, min: 0 },
+    // Live running counts
+    understoodCount: { type: Number, default: 0, min: 0 },
+    stillConfusedCount: { type: Number, default: 0, min: 0 },
+    // Wall-clock of the request + completion / timeout
+    requestedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    // Per-respondent log (for forensics, capped at 500 entries)
+    responses: [{
+      studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      // Anonymous identifier (HMAC hash) so we can dedup re-submits even
+      // when we don't have a stable ObjectId for the student in the room.
+      studentHash: { type: String, default: '' },
+      answer: { type: String, enum: ['understood', 'still_confused'] },
+      respondedAt: { type: Date, default: Date.now }
+    }]
   }
 }, {
   timestamps: true

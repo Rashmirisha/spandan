@@ -186,6 +186,38 @@ export async function attachSignalToEvent ({
     if (topicSource === 'none') topicSource = 'fallback'
   }
 
+  // DEMO FALLBACK (2026-07-18): when no marker / transcript / student
+  // utterance produced a topic, AND a fresh room was just started (room
+  // title sits in `Room.name`), use the room title as the topic label.
+  // This prevents the teacher dashboard from showing 'General Confusion'
+  // during the demo before any transcript has been captured. Skips when
+  // the room name itself looks like placeholder text ('New Room',
+  // 'Untitled', generic templates), in which case we stay on the default.
+  if (
+    (topicLabel === 'General confusion' || topicLabel === 'General Confusion' || topicSource === 'fallback' || topicSource === 'none' || topicSource === 'no_session') &&
+    !(placeholderLabel && ut.length > 0)
+  ) {
+    try {
+      const room = await Room.findById(roomId).select('name').lean()
+      const rn = (room?.name || '').trim()
+      const lower = rn.toLowerCase()
+      const looksLikePlaceholder =
+        !rn ||
+        lower === 'new room' ||
+        lower === 'untitled' ||
+        lower === 'untitled room' ||
+        /^room\s*\d*$/i.test(rn) ||
+        lower.length < 3
+      if (!looksLikePlaceholder) {
+        topicLabel = rn.slice(0, 80)
+        topicSource = 'room_title'
+      }
+    } catch (e) {
+      // If room lookup fails, keep the previous fallback -- this branch is
+      // best-effort, never crash the doubt-signal path.
+    }
+  }
+
   // Look up the currently active event for this room
   const active = await getActiveForRoom(roomId)
 
@@ -285,7 +317,38 @@ export function formatForClient (event, { nowMs = Date.now() } = {}) {
     // Milestone 3: weighted scoring
     score: scoring.score,
     tier: scoring.tier ? { name: scoring.tier.name, label: scoring.tier.label, emoji: scoring.tier.emoji, description: scoring.tier.description } : null,
-    scoreComponents: scoring.components
+    scoreComponents: scoring.components,
+    // RECOVERY FLOW: persistent feedback stats. Surface on the wire so
+    // Recent Confusion Events can render past tallies, and so the
+    // AnalyticsPage FeedbackCollector can hydrate from a re-mount.
+    feedbackStats: formatFeedbackStatsForClient(event.feedbackStats)
+  }
+}
+
+/**
+ * Wire-format the persistent feedback stats. Drops the raw `responses`
+ * array (too noisy); the tallies + status are enough for the dashboard.
+ */
+function formatFeedbackStatsForClient (fs) {
+  if (!fs || typeof fs !== 'object') {
+    return {
+      status: 'none',
+      expectedRespondents: 0,
+      understoodCount: 0,
+      stillConfusedCount: 0,
+      requestedAt: null,
+      completedAt: null,
+      responseCount: 0
+    }
+  }
+  return {
+    status: fs.status || 'none',
+    expectedRespondents: fs.expectedRespondents || 0,
+    understoodCount: fs.understoodCount || 0,
+    stillConfusedCount: fs.stillConfusedCount || 0,
+    requestedAt: fs.requestedAt || null,
+    completedAt: fs.completedAt || null,
+    responseCount: Array.isArray(fs.responses) ? fs.responses.length : 0
   }
 }
 
@@ -385,6 +448,134 @@ export function getFeedbackTally (eventId) {
 }
 
 /**
+ * RECOVERY FLOW: open a feedback round on an event.
+ *   - Marks event.feedbackStats.status = 'pending'
+ *   - Sets expectedRespondents = current confusedStudentCount
+ *   - Resets the live counters + responses array
+ *   - Returns the lean event doc with the updated stats.
+ *
+ * Called by /request-feedback. The expectation is that the
+ * `confusion:resolved` socket emit follows so both students (popup)
+ * and the teacher dashboard (FeedbackCollector card) get the cue.
+ */
+export async function openFeedbackRound (eventId) {
+  if (!mongoose.Types.ObjectId.isValid(String(eventId))) return null
+  const evt = await ConfusionEvent.findById(eventId)
+  if (!evt) return null
+  const expected = Math.max(
+    1,
+    evt.confusedStudentCount || (Array.isArray(evt.studentIds) ? evt.studentIds.length : 1)
+  )
+  evt.feedbackStats = evt.feedbackStats || {}
+  evt.feedbackStats.status = 'pending'
+  evt.feedbackStats.expectedRespondents = expected
+  evt.feedbackStats.understoodCount = 0
+  evt.feedbackStats.stillConfusedCount = 0
+  evt.feedbackStats.requestedAt = new Date()
+  evt.feedbackStats.completedAt = null
+  evt.feedbackStats.responses = []
+  await evt.save()
+  // Also clear the in-memory tally so per-restart drift doesn't leak
+  feedbackTallies.set(String(eventId), { understood: 0, stillConfused: 0 })
+  return evt.toObject()
+}
+
+/**
+ * RECOVERY FLOW: record a single student response against the persistent
+ * event.feedbackStats structure. Idempotent by studentHash — a student
+ * can answer only once per round.
+ *
+ * Returns { isNew, tally, total, completed } where:
+ *   isNew      = true if this was a new response (false if the student
+ *                had already answered — we don't double-count)
+ *   tally      = { understood, stillConfused }
+ *   total      = tally.understood + tally.stillConfused
+ *   completed  = true when total >= expectedRespondents OR all-understood
+ */
+export async function recordFeedbackPersistent (eventId, { studentId, studentHash, answer }) {
+  if (!mongoose.Types.ObjectId.isValid(String(eventId))) {
+    return { isNew: false, tally: { understood: 0, stillConfused: 0 }, total: 0, completed: false }
+  }
+  const evt = await ConfusionEvent.findById(eventId)
+  if (!evt) {
+    return { isNew: false, tally: { understood: 0, stillConfused: 0 }, total: 0, completed: false }
+  }
+  // Ensure subdoc exists
+  evt.feedbackStats = evt.feedbackStats || {}
+  const fs = evt.feedbackStats
+  if (!Array.isArray(fs.responses)) fs.responses = []
+  if (!fs.status) fs.status = 'none'
+  if (typeof fs.understoodCount !== 'number') fs.understoodCount = 0
+  if (typeof fs.stillConfusedCount !== 'number') fs.stillConfusedCount = 0
+  if (typeof fs.expectedRespondents !== 'number') fs.expectedRespondents = 0
+
+  // Idempotency: same studentHash already responded in this round?
+  const already = studentHash
+    ? fs.responses.find(r => r.studentHash === studentHash)
+    : fs.responses.find(r => studentId && r.studentId && String(r.studentId) === String(studentId))
+  if (already) {
+    return {
+      isNew: false,
+      tally: { understood: fs.understoodCount, stillConfused: fs.stillConfusedCount },
+      total: fs.understoodCount + fs.stillConfusedCount,
+      completed: fs.status === 'completed' || fs.status === 'timed_out'
+    }
+  }
+
+  // Accept the response
+  fs.responses.push({
+    studentId: studentId || undefined,
+    studentHash: studentHash || '',
+    answer,
+    respondedAt: new Date()
+  })
+  if (answer === 'understood') fs.understoodCount += 1
+  else fs.stillConfusedCount += 1
+
+  // Mark the round complete when:
+  //   - everyone has responded (total >= expected), OR
+  //   - all-understood (no more students need to respond)
+  const total = fs.understoodCount + fs.stillConfusedCount
+  const completed =
+    (fs.expectedRespondents > 0 && total >= fs.expectedRespondents) ||
+    (fs.understoodCount === fs.expectedRespondents && fs.stillConfusedCount === 0)
+  if (completed) {
+    fs.status = 'completed'
+    fs.completedAt = new Date()
+  } else {
+    fs.status = 'pending'
+  }
+
+  await evt.save()
+  return {
+    isNew: true,
+    tally: { understood: fs.understoodCount, stillConfused: fs.stillConfusedCount },
+    total,
+    completed
+  }
+}
+
+/**
+ * RECOVERY FLOW: mark an in-flight round as timed-out. Called by the
+ * feedback route if we want to surface a timeout-driven summary instead
+ * of waiting for all students. For now this is a no-op when called with
+ * status already terminal.
+ */
+export async function completeFeedbackRound (eventId, { status = 'completed' } = {}) {
+  if (!mongoose.Types.ObjectId.isValid(String(eventId))) return null
+  const evt = await ConfusionEvent.findById(eventId)
+  if (!evt) return null
+  evt.feedbackStats = evt.feedbackStats || {}
+  if (['completed', 'timed_out'].includes(evt.feedbackStats.status)) {
+    return evt.toObject()
+  }
+  evt.feedbackStats.status = status
+  evt.feedbackStats.completedAt = new Date()
+  await evt.save()
+  return evt.toObject()
+}
+
+/**
  * RESOLVED PROMPT: reopen a previously closed event (student said
  * 'still_confused'). Increments event.reopenedCount atomically.
  *
@@ -428,5 +619,8 @@ export default {
   reopenEvent,
   recordFeedback,
   getFeedbackTally,
+  openFeedbackRound,
+  recordFeedbackPersistent,
+  completeFeedbackRound,
   formatForClient
 }

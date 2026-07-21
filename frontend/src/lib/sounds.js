@@ -55,6 +55,13 @@ export const sounds = {
   // Cooldown / error -- single low muted thud
   deny () {
     blip({ freq: 180, dur: 0.10, type: 'sine', gain: 0.10, attack: 0.003, decay: 0.09 })
+  },
+  // New confusion notification bell -- two-note ascending bell (E5 -> A5)
+  // Used by ConfusionToast when a NEW confusion event is created.
+  // Gentle enough to use repeatedly without being annoying.
+  notify () {
+    blip({ freq: 659.25, dur: 0.30, type: 'sine', gain: 0.10, attack: 0.005, decay: 0.28 }) // E5
+    setTimeout(() => blip({ freq: 880.00, dur: 0.40, type: 'sine', gain: 0.08, attack: 0.005, decay: 0.38 }), 90) // A5
   }
 }
 

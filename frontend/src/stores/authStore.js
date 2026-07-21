@@ -1,6 +1,15 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import { API_URL } from '../config.js'
+
+// Session-scoped storage: each browser tab gets its own auth, so a teacher
+// signed in here is NOT clobbered by a student signing in in another tab,
+// and vice versa. Within a tab, refresh still keeps you logged in.
+const sessionOnlyStorage = {
+  getItem: (key) => (typeof window !== 'undefined' ? window.sessionStorage.getItem(key) : null),
+  setItem: (key, value) => { if (typeof window !== 'undefined') window.sessionStorage.setItem(key, value) },
+  removeItem: (key) => { if (typeof window !== 'undefined') window.sessionStorage.removeItem(key) }
+}
 
 export const useAuthStore = create(
   persist(
@@ -126,8 +135,9 @@ export const useAuthStore = create(
     }),
     {
       name: 'spandan-auth',
-      partialize: (state) => ({ 
-        user: state.user, 
+      storage: createJSONStorage(() => sessionOnlyStorage),
+      partialize: (state) => ({
+        user: state.user,
         token: state.token,
         isAuthenticated: state.isAuthenticated
       })

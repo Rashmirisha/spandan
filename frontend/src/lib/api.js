@@ -138,5 +138,7 @@ export const confusionApi = {
   // RECOVERY FLOW: teacher requests student feedback on an active event
   requestFeedback: (eventId) => api.post(`/confusion/event/${eventId}/request-feedback`),
   // RECOVERY FLOW: student responds with understood / still_confused
-  submitFeedback: (eventId, answer) => api.post(`/confusion/event/${eventId}/feedback`, { answer })
+  submitFeedback: (eventId, answer) => api.post(`/confusion/event/${eventId}/feedback`, { answer }),
+  // FORCE RESOLVE: teacher closes the event immediately (no feedback required)
+  resolve: (eventId) => api.post(`/confusion/event/${eventId}/resolve`)
 }

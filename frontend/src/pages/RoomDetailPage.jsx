@@ -13,10 +13,11 @@ import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
 import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
-import ConfusionAlertCard from '../components/ConfusionAlertCard'
-import ConfusionTimeline from '../components/ConfusionTimeline'
-import TopicHeatmap from '../components/TopicHeatmap'
+// Analytics feature lives on its own dedicated page now. The live room page
+// only keeps the topic-marker bar (a teacher tool used during recording).
+// See /teacher/analytics/:roomId for the new analytics dashboard.
 import TopicMarkerBar from '../components/TopicMarkerBar'
+import ConfusionToast from '../components/ConfusionToast.jsx'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
@@ -1053,6 +1054,8 @@ function RoomDetailPage() {
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
+      {/* Live student confusion toasts -- listens to socket independently */}
+      <ConfusionToast roomName={room?.name} />
       <Sidebar user={user} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
@@ -1659,17 +1662,24 @@ function RoomDetailPage() {
       </div>
 
 
-      {/* Contextual Doubt-Anchored Polling: live confusion signals for the teacher */}
+      {/* Topic markers -- teacher sets "what we were on at this time" so spike cards show real topics.
+          The live confusion analytics (alert card, topic heat, history timeline) have moved to
+          the dedicated Analytics page: /teacher/analytics/:roomId */}
       {room?._id && (
-        <div className="confusion-stack" style={{ padding: '0 32px 24px', maxWidth: '420px', marginLeft: 'auto' }}>
-          {/* Milestone 3: ONE live card -- tier-styled, animated count, status pill */}
-          <ConfusionAlertCard roomId={room._id} hasTranscript={!!room?.roomStartedAt} />
-          {/* Milestone 3: ranked topic heat bars */}
-          <TopicHeatmap roomId={room._id} />
-          {/* Milestone 3: history-only timeline (replaces legacy ConfusionSpikePanel live card) */}
-          <ConfusionTimeline roomId={room._id} />
-          {/* Topic markers -- teacher sets "what we were on at this time" so spike cards show real topics */}
+        <div style={{ padding: '0 32px 24px', maxWidth: '420px', marginLeft: 'auto' }}>
           <TopicMarkerBar roomId={room._id} roomCode={room.code} editable />
+          <button
+            onClick={() => navigate(`/teacher/analytics/${room._id}`)}
+            style={{
+              marginTop: 12, padding: '10px 14px', width: '100%',
+              background: 'linear-gradient(135deg, #1e3a8a, #3b82f6)',
+              color: 'white', border: 'none', borderRadius: 10,
+              fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              boxShadow: '0 2px 6px rgba(59,130,246,0.3)'
+            }}
+          >
+            📊 Open Live Analytics →
+          </button>
         </div>
       )}
 

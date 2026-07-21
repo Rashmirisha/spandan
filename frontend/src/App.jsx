@@ -8,6 +8,7 @@ import AuthPage from './pages/AuthPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import DashboardPage from './pages/DashboardPage'
 import StudentDashboard from './pages/StudentDashboard'
+import AnalyticsPage from './pages/AnalyticsPage'
 import RoomDetailPage from './pages/RoomDetailPage'
 import StudentRoomPage from './pages/StudentRoomPage'
 import CreateRoomPage from './pages/CreateRoomPage'
@@ -154,6 +155,11 @@ function App() {
         <Route path="/teacher/room/:roomId" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <RoomDetailPage />
+          </ProtectedRoute>
+        } />
+        <Route path="/teacher/analytics/:roomId" element={
+          <ProtectedRoute allowedRoles={['teacher', 'admin']}>
+            <AnalyticsPage />
           </ProtectedRoute>
         } />
         <Route path="/teacher/room/:roomId/results" element={
