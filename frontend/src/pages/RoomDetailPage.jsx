@@ -17,6 +17,7 @@ import ConfusionAlertCard from '../components/ConfusionAlertCard'
 import ConfusionTimeline from '../components/ConfusionTimeline'
 import TopicHeatmap from '../components/TopicHeatmap'
 import TopicMarkerBar from '../components/TopicMarkerBar'
+import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
 import { transcribeAudio, getTranscriptionStatus, convertWebMToWav } from '../services/serverTranscriptionService'
 import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/questionService'
@@ -29,6 +30,7 @@ function RoomDetailPage() {
   const { user, token } = useAuthStore()
   const { socket, isConnected, joinRoom, leaveRoom } = useSocketStore()
   const { getRoom, updateRoom, setAuthToken } = useRoomStore()
+  const isMobile = useIsMobile()
 
   const [room, setRoom] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -88,6 +90,7 @@ function RoomDetailPage() {
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
   const [showTextToQuestions, setShowTextToQuestions] = useState(false)
+  const [pastedText, setPastedText] = useState('') // preserved so a failed generation can reopen the popup with the text intact
   const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
   const [showTextQuestionPopup, setShowTextQuestionPopup] = useState(false)
   const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
@@ -359,7 +362,13 @@ function RoomDetailPage() {
       return
     }
 
-    // Save transcript to database before generating questions.
+    // Save transcript to database BEFORE generating questions. This guarantees
+    // the backend's auto-topic pipeline (which fires on POST /api/transcripts)
+    // has produced topics by the time question generation runs. A failed save
+    // here aborts generation so we never generate questions from an unsaved
+    // transcript (which would later produce "topic: General Confusion" on
+    // the recovery dashboard). Auto-topic + topic-leak fix depends on this order.
+    let generated = null
     if (!(await saveCurrentSegmentTranscript())) {
       window.alert('Transcript could not be saved. Please try generating questions manually after checking the connection.')
       setGenerateQEnabled(true)
@@ -369,28 +378,30 @@ function RoomDetailPage() {
     // Auto-generate questions
     try {
       console.log('[SEGMENT] Auto-generating questions...')
-      const questions = await generateQuestionsFromText(textToUse, currentSegment)
-      if (questions && questions.length > 0) {
-        setPendingQuestions(questions)
-        setShowQuestionPopup(true)
-        setIsPopupOpen(true)
-      }
+      generated = await generateQuestionsFromText(textToUse, currentSegment)
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
       // Auto-retry once
       try {
         console.log('[SEGMENT] Retrying question generation...')
-        const questions = await generateQuestionsFromText(textToUse, currentSegment)
-        if (questions && questions.length > 0) {
-          setPendingQuestions(questions)
-          setShowQuestionPopup(true)
-          setIsPopupOpen(true)
-        }
+        generated = await generateQuestionsFromText(textToUse, currentSegment)
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
         window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
         setGenerateQEnabled(true) // Enable fail-safe manual button
+        return
       }
+    }
+
+    if (generated && generated.length > 0) {
+      setPendingQuestions(generated)
+      setShowQuestionPopup(true)
+      setIsPopupOpen(true)
+      // Questions are in hand and the review popup is up — NOW persist the transcript, fire-and-forget
+      // so a slow/failed/hung save can never block the pipeline or lose the generated questions.
+      // source defaults to 'audio' (real segment).
+      saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
+        .catch((err) => console.error('[SEGMENT] Failed to save transcript (questions already generated):', err))
     }
   }
 
@@ -456,14 +467,28 @@ function RoomDetailPage() {
         }))
         setPendingTextQuestions(markedQuestions)
         setShowTextQuestionPopup(true)
+        // Questions generated and the review popup is up — NOW persist the pasted source text,
+        // fire-and-forget so a slow/failed/hung save can never block or delay generation. A paste
+        // has no segment → source='paste' + sentinel segmentIndex -1 (never collides with audio).
+        saveTranscript(room._id, -1, text, 0, 'paste')
+          .catch((err) => console.error('[PASTE] Failed to save transcript (questions already generated):', err))
       } else {
+        // Generation failed — keep the pasted text and reopen the paste popup so the teacher can
+        // retry without re-pasting (the popup unmounts on close, so its own text is otherwise lost).
+        setPastedText(text)
+        setShowTextToQuestions(true)
         window.alert(data.error || 'Failed to generate questions. Please try again.')
       }
     } catch (error) {
       setIsGeneratingFromText(false)
       setShowGeneratingPopup(false) // Close generating popup
       console.error('Text to questions error:', error)
-      window.alert('Failed to generate questions. Please try again.')
+      if (error.name !== 'AbortError') {
+        // Same as above — preserve the pasted text and reopen the popup for a retry.
+        setPastedText(text)
+        setShowTextToQuestions(true)
+        window.alert('Failed to generate questions. Please try again.')
+      }
     }
   }
 
@@ -847,12 +872,19 @@ function RoomDetailPage() {
     setGenerateQEnabled(false)
 
     try {
-      const questions = await generateQuestionsFromText(textToUse, currentSegment + 1)
+      // Manual "Generate Q" is the fail-safe RETRY of the CURRENT segment's automatic generation, so
+      // it targets `currentSegment` (matching handleSegmentComplete) and does NOT advance the counter
+      // — it re-does segment N, it does not move to N+1 (the next segment is bumped later by
+      // startRecording when the teacher resumes).
+      const questions = await generateQuestionsFromText(textToUse, currentSegment)
       if (questions && questions.length > 0) {
         setPendingQuestions(questions)
         setShowQuestionPopup(true)
         setIsPopupOpen(true)
-        setCurrentSegment(prev => prev + 1)
+        // Persist the transcript only once questions exist — fire-and-forget so it never blocks.
+        // Live transcript → source 'audio'; segmentIndex matches the questions (currentSegment).
+        saveTranscript(room._id, currentSegment, textToUse, roomSettings.segmentTime * 60)
+          .catch((err) => console.error('[MANUAL] Failed to save transcript (questions already generated):', err))
       }
     } catch (error) {
       console.error('Manual question generation failed:', error)
@@ -1007,7 +1039,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{
               width: '48px',
@@ -1029,7 +1061,7 @@ function RoomDetailPage() {
     return (
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <Sidebar user={user} />
-        <div style={{ flex: 1, marginLeft: '240px', padding: '32px' }}>
+        <div style={{ flex: 1, marginLeft: 'var(--sidebar-width, 240px)', padding: '32px' }}>
           <div style={{ background: 'var(--bg-card)', borderRadius: '16px', padding: '32px', textAlign: 'center' }}>
             <h2 style={{ color: 'var(--text-primary)' }}>{error || 'Room not found'}</h2>
             <button onClick={() => navigate('/teacher')} style={{
@@ -1055,12 +1087,12 @@ function RoomDetailPage() {
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: '240px', minWidth: 0, maxWidth: 'calc(100vw - 240px)', overflowX: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: 'var(--sidebar-width, 240px)', minWidth: 0, maxWidth: 'calc(100vw - var(--sidebar-width, 240px))', overflowX: 'hidden' }}>
         {/* Header */}
-        <header style={{ background: 'var(--header-bg)', color: 'white', padding: '16px 32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700' }}>{room.name}</h1>
+        <header style={{ background: 'var(--header-bg)', color: 'white', padding: isMobile ? '16px 16px' : '16px 32px', paddingLeft: isMobile ? '64px' : '32px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{room.name}</h1>
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <ThemeToggle />
@@ -1070,7 +1102,7 @@ function RoomDetailPage() {
         </header>
 
         {/* Content */}
-        <div style={{ flex: 1, padding: '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+        <div style={{ flex: 1, padding: isMobile ? '16px' : '24px 32px', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', padding: '12px', marginBottom: '16px', color: '#dc2626' }}>
               {error}
@@ -1082,10 +1114,15 @@ function RoomDetailPage() {
             display: 'flex',
             alignItems: 'center',
             gap: '12px',
+            flexWrap: 'wrap',
             background: 'var(--bg-card)',
-            borderRadius: '12px',
+            borderRadius: 'var(--radius-lg)',
+            border: '1px solid var(--border-color)',
+            boxShadow: 'var(--shadow-md)',
             padding: '12px 16px',
-            marginBottom: '20px'
+            marginBottom: '20px',
+            maxWidth: '100%',
+            boxSizing: 'border-box'
           }}>
             <button onClick={() => navigate('/teacher')} style={{
               padding: '8px 12px',
@@ -1123,7 +1160,7 @@ function RoomDetailPage() {
               </button>
             </div>
 
-            <div style={{ flex: 1 }} />
+            <div style={{ flex: 1, minWidth: 0, display: isMobile ? 'none' : 'block' }} />
 
             {/* Segment Timer Display */}
             {isRecording && (
@@ -1192,7 +1229,7 @@ function RoomDetailPage() {
             {/* Paste & Generate Button */}
             {!isEnded && (
               <button
-                onClick={() => setShowTextToQuestions(true)}
+                onClick={() => { setPastedText(''); setShowTextToQuestions(true) }}
                 style={{
                   padding: '8px 16px',
                   background: '#10b981',
@@ -1296,14 +1333,16 @@ function RoomDetailPage() {
           </div>
 
           {/* Microphone and Transcription Row - 30/70 Split */}
-          <div style={{ display: 'flex', gap: '20px', height: '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
+          <div style={{ display: 'flex', gap: '20px', height: isMobile ? 'auto' : '420px', marginBottom: '20px', flexWrap: 'wrap', overflowX: 'hidden' }}>
             {/* Microphone Card - 30% */}
             <div style={{
-              flex: '1 1 calc(30% - 10px)',
-              minWidth: '280px',
+              flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)',
+              minWidth: isMobile ? 0 : '280px',
               maxWidth: '100%',
               background: 'var(--bg-card)',
-              borderRadius: '16px',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)',
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
@@ -1416,11 +1455,14 @@ function RoomDetailPage() {
 
             {/* Transcription Card - 70% */}
             <div style={{
-              flex: '1 1 calc(70% - 10px)',
-              minWidth: '300px',
+              flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)',
+              minWidth: isMobile ? 0 : '300px',
               maxWidth: '100%',
+              minHeight: isMobile ? '260px' : undefined,
               background: 'var(--bg-card)',
-              borderRadius: '16px',
+              borderRadius: 'var(--radius-lg)',
+              border: '1px solid var(--border-color)',
+              boxShadow: 'var(--shadow-md)',
               padding: '20px',
               display: 'flex',
               flexDirection: 'column',
@@ -1430,12 +1472,14 @@ function RoomDetailPage() {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
+                gap: '8px',
+                flexWrap: 'wrap',
                 marginBottom: '12px',
                 paddingBottom: '12px',
                 borderBottom: '1px solid var(--border-color)'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '18px' }}>🎯</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                  <span style={{ fontSize: '18px' }}>🎙️</span>
                   <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                     Current Segment Transcription
                   </span>
@@ -1503,7 +1547,7 @@ function RoomDetailPage() {
           {/* Third Row - Session Questions (flex) + Leaderboard (flex) */}
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', width: '100%', overflowX: 'hidden', boxSizing: 'border-box' }}>
             {/* Session Questions - flexible width */}
-            <div style={{ flex: '1 1 calc(70% - 10px)', minWidth: '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(70% - 10px)', minWidth: isMobile ? 0 : '300px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
               <span style={{ fontSize: '20px' }}>📋</span>
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -1524,7 +1568,8 @@ function RoomDetailPage() {
             </div>
 
             {generatedQuestions.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ position: 'relative' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
                 {generatedQuestions.map((q, index) => (
                   <div key={q._id || index} style={{
                     padding: '14px 16px',
@@ -1633,6 +1678,10 @@ function RoomDetailPage() {
                   </div>
                 ))}
               </div>
+              {generatedQuestions.length > 6 && (
+                <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
+              )}
+              </div>
             ) : (
               <div style={{
                 textAlign: 'center',
@@ -1645,7 +1694,7 @@ function RoomDetailPage() {
             )}
             </div>
             {/* Leaderboard - flexible width */}
-            <div style={{ flex: '1 1 calc(30% - 10px)', minWidth: '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: '16px', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
+            <div style={{ flex: isMobile ? '1 1 100%' : '1 1 calc(30% - 10px)', minWidth: isMobile ? 0 : '280px', maxWidth: '100%', background: 'var(--bg-card)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-md)', padding: '20px', boxSizing: 'border-box', overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                 <span style={{ fontSize: '20px' }}>📋</span>
                 <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
@@ -1735,6 +1784,7 @@ function RoomDetailPage() {
           onGenerate={handleTextToQuestionsGenerate}
           roomSettings={roomSettings}
           isGenerating={isGeneratingFromText}
+          initialText={pastedText}
         />
       )}
 
