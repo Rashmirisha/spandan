@@ -18,6 +18,7 @@ import ConfusionAlertCard from '../components/ConfusionAlertCard'
 import ConfusionTimeline from '../components/ConfusionTimeline'
 import TopicHeatmap from '../components/TopicHeatmap'
 import TopicMarkerBar from '../components/TopicMarkerBar'
+import ErrorBoundary from '../components/ErrorBoundary'
 import YouTubeVideo, { extractYouTubeId } from '../components/YouTubeVideo'
 import useIsMobile from '../hooks/useIsMobile'
 import { saveTranscript } from '../services/transcriptService'
@@ -947,6 +948,29 @@ function RoomDetailPage() {
     }).catch(() => {})
   }
 
+  // Single source of truth for the per-segment leaderboard fold: fire it whenever ANY question
+  // pop-up (approval / Paste&Generate / Create-Q) goes from open -> closed, by ANY path — the last
+  // question's timer auto-closing it, rejecting the last question, or the teacher closing it
+  // manually. Guarantees the update fires exactly once per close and can't be bypassed by a
+  // particular close path.
+  const approvalPopupWasOpenRef = useRef(false)
+  const textPopupWasOpenRef = useRef(false)
+  const createPopupWasOpenRef = useRef(false)
+  useEffect(() => {
+    const open = showQuestionPopup && pendingQuestions.length > 0
+    if (approvalPopupWasOpenRef.current && !open) emitSegmentDone()
+    approvalPopupWasOpenRef.current = open
+  }, [showQuestionPopup, pendingQuestions])
+  useEffect(() => {
+    const open = showTextQuestionPopup && pendingTextQuestions.length > 0
+    if (textPopupWasOpenRef.current && !open) emitSegmentDone()
+    textPopupWasOpenRef.current = open
+  }, [showTextQuestionPopup, pendingTextQuestions])
+  useEffect(() => {
+    if (createPopupWasOpenRef.current && !showCreateQuestion) emitSegmentDone()
+    createPopupWasOpenRef.current = showCreateQuestion
+  }, [showCreateQuestion])
+
   const resumeTeacherVideo = () => {
     // Tell students the popup window is over so they resume + jump to the live edge (fire even if the
     // teacher's own player ref isn't ready).
@@ -1214,7 +1238,7 @@ function RoomDetailPage() {
   const handleTextQuestionClose = () => {
     setShowTextQuestionPopup(false)
     setPendingTextQuestions([])
-    emitSegmentDone() // fold this Paste & Generate batch into the leaderboard
+    // leaderboard fold fires via the pop-up-close watcher (textPopupWasOpenRef) on close
   }
 
   const handleCreateQuestion = async (questionData) => {
@@ -2085,7 +2109,9 @@ function RoomDetailPage() {
                   Leaderboard
                 </span>
               </div>
-              <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              <ErrorBoundary message="Leaderboard unavailable">
+                <Leaderboard roomId={room?._id} token={token} socket={socket} />
+              </ErrorBoundary>
             </div>
           </div>
         </div>
@@ -2133,7 +2159,7 @@ function RoomDetailPage() {
             // Resume recording for next segment
             startRecording({ resetSegment: false })
             if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
-            emitSegmentDone() // fold this segment into the leaderboard (all modes)
+            // leaderboard fold fires via the pop-up-close watcher (approvalPopupWasOpenRef) on close
 
             // Timer will auto-start via the useEffect since isPendingReview is now false
           }}
@@ -2150,7 +2176,7 @@ function RoomDetailPage() {
             setSegmentTimeLeft(roomSettings.segmentTime * 60)
             startRecording({ resetSegment: false })
             if (isVideoMode) resumeTeacherVideo() // resume the video (live: jump to live edge) after review
-            emitSegmentDone() // fold this segment into the leaderboard (all modes)
+            // leaderboard fold fires via the pop-up-close watcher (approvalPopupWasOpenRef) on close
           }}
         />
       )}
@@ -2159,7 +2185,7 @@ function RoomDetailPage() {
       {showCreateQuestion && (
         <CreateQuestionOverlay
           isOpen={showCreateQuestion}
-          onClose={() => { setShowCreateQuestion(false); emitSegmentDone() }}
+          onClose={() => setShowCreateQuestion(false)}
           onLaunch={handleCreateQuestion}
         />
       )}
