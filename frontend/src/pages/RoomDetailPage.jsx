@@ -36,9 +36,16 @@ import api from '../lib/api.js'
 //   4. Trims repeated whitespace
 // The result is shorter, more readable, and produces cleaner topic/question output.
 const FILLER_WORDS = new Set([
-  'um', 'uh', 'uhh', 'umm', 'ummm', 'hmm', 'hmmm', 'hm', 'mm', 'mmm',
-  'so', 'well', 'like', 'okay', 'ok', 'right', 'see', 'yeah', 'yep', 'yup',
-  'k', 'kk', 'ah', 'ahh'
+  // Hesitation sounds
+  'um', 'uh', 'uhh', 'umm', 'ummm', 'er', 'err', 'erm',
+  // Acknowledgement sounds
+  'mhm', 'mhmm', 'mm-hmm', 'mmhmm', 'mm', 'mmm', 'hm', 'hmm', 'hmmm',
+  'huh', 'uh-huh', 'uhhuh', 'mmkay', 'mkay',
+  // Soft discourse markers
+  'so', 'well', 'like', 'okay', 'ok', 'alright',
+  // Generic fillers
+  'right', 'see', 'yeah', 'yep', 'yup', 'yup', 'yea', 'ya',
+  'k', 'kk', 'ah', 'ahh', 'eh', 'oh'
 ])
 // Multi-word filler phrases — match on the joined normalized text
 const FILLER_PHRASES = [
@@ -51,23 +58,65 @@ const FILLER_PHRASES = [
 function cleanUpTranscript (rawText) {
   if (!rawText || typeof rawText !== 'string') return ''
   let text = rawText.trim()
+  // Count filler occurrences in the ORIGINAL input (before any transformations).
+  // This lets us decide whether a small post-cleanup remnant is meaningful or
+  // likely leftover filler.
+  const rawTokens = rawText.split(/\s+/).filter(Boolean)
+  const rawFillerCount = rawTokens.filter(w => {
+    const lower = w.toLowerCase().replace(/[.,!?]/g, '')
+    return FILLER_WORDS.has(lower)
+  }).length
   // Remove multi-word filler phrases FIRST so they don't get partially word-filtered
   for (const phrase of FILLER_PHRASES) {
     text = text.replace(new RegExp(`\\s*${phrase}\\s*`, 'gi'), ' ')
   }
-  // Collapse repeated words: "yeah yeah yeah" -> "yeah", "the the" -> "the"
-  text = text.replace(/\b(\w+)(\s+\1\b)+/gi, '$1')
-  // Remove filler words — keep them only if they're the entire utterance
-  text = text.split(/\s+/)
-    .filter((w, i, arr) => {
-      const lower = w.toLowerCase().replace(/[.,!?]/g, '')
-      if (arr.length === 1) return true
-      return !FILLER_WORDS.has(lower)
-    })
-    .join(' ')
+  // Collapse repeated word+optional-punct within each whitespace-separated token:
+  //   "Mhm.Mhm.Mhm."      -> "Mhm."
+  //   "yeah,yeah,yeah"    -> "yeah"
+  //   "See,see,see,"      -> "See,"
+  text = text.split(/\s+/).map(token => {
+    const segments = token.match(/[\w'-]+|[.,!?]/g) || [token]
+    if (segments.length < 3) return token
+    const wordSegs = segments.filter((_, i) => i % 2 === 0)
+    const allSame = wordSegs.every(w => w.toLowerCase() === wordSegs[0].toLowerCase())
+    if (!allSame) return token
+    return wordSegs[0] + (segments[1] || '')
+  }).join(' ')
+  // Collapse across whitespace ("yeah   yeah   yeah")
+  text = text.replace(/\b(\w+)(?:\s+\1\b)+/gi, '$1')
+  // Drop filler words. If dropping leaves content words, keep them.
+  const tokens = text.split(/\s+/).filter(Boolean)
+  const cleanedTokens = tokens.filter(w => {
+    const lower = w.toLowerCase().replace(/[.,!?]/g, '')
+    return !FILLER_WORDS.has(lower)
+  })
+  let result = cleanedTokens.join(' ')
   // Trim whitespace and stray punctuation
-  text = text.replace(/\s+/g, ' ').trim()
-  return text
+  result = result.replace(/^[\s.,!?]+|[\s.,!?]+$/g, '').replace(/\s+/g, ' ').trim()
+  const resultTokens = result.split(/\s+/).filter(Boolean)
+  // If result is empty and original was a single filler word, keep one copy.
+  if (resultTokens.length === 0) {
+    if (rawFillerCount === 1 && rawTokens.length === 1) {
+      return rawTokens[0].toLowerCase().replace(/[.,!?]/g, '')
+    }
+    return ''
+  }
+  // If original was mostly filler (>=3 fillers) AND result is a single short word
+  // (1-2 chars OR a short discourse word), drop it — it's likely noise.
+  if (rawFillerCount >= 3 && resultTokens.length === 1) {
+    const singleWord = resultTokens[0].toLowerCase().replace(/[.,!?]/g, '')
+    const SHORT = singleWord.length <= 4
+    if (SHORT) return ''
+  }
+  // If cleaned result is all fillers and original had >=2 fillers, drop.
+  const resultAllFiller = resultTokens.every(w => {
+    const lower = w.toLowerCase().replace(/[.,!?]/g, '')
+    return FILLER_WORDS.has(lower)
+  })
+  if (resultAllFiller && rawFillerCount >= 2) {
+    return ''
+  }
+  return result
 }
 
 function RoomDetailPage() {
