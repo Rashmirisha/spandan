@@ -27,6 +27,49 @@ import { requestQuestionGeneration, fetchAllRoomQuestions } from '../services/qu
 import { API_URL } from '../config.js'
 import api from '../lib/api.js'
 
+// Clean up a transcript string before display/save. Whisper occasionally produces
+// repeated fragments ("yeah yeah yeah", "see see see") and filler words ("um", "uh",
+// "hmm") on quiet audio. This function:
+//   1. Removes multi-word filler phrases ("all right", "you know", "i mean")
+//   2. Collapses 2+ consecutive identical words ("yeah yeah yeah" -> "yeah")
+//   3. Removes common filler words that don't add meaning
+//   4. Trims repeated whitespace
+// The result is shorter, more readable, and produces cleaner topic/question output.
+const FILLER_WORDS = new Set([
+  'um', 'uh', 'uhh', 'umm', 'ummm', 'hmm', 'hmmm', 'hm', 'mm', 'mmm',
+  'so', 'well', 'like', 'okay', 'ok', 'right', 'see', 'yeah', 'yep', 'yup',
+  'k', 'kk', 'ah', 'ahh'
+])
+// Multi-word filler phrases — match on the joined normalized text
+const FILLER_PHRASES = [
+  'all right',
+  'you know',
+  'i mean',
+  'kind of',
+  'sort of',
+]
+function cleanUpTranscript (rawText) {
+  if (!rawText || typeof rawText !== 'string') return ''
+  let text = rawText.trim()
+  // Remove multi-word filler phrases FIRST so they don't get partially word-filtered
+  for (const phrase of FILLER_PHRASES) {
+    text = text.replace(new RegExp(`\\s*${phrase}\\s*`, 'gi'), ' ')
+  }
+  // Collapse repeated words: "yeah yeah yeah" -> "yeah", "the the" -> "the"
+  text = text.replace(/\b(\w+)(\s+\1\b)+/gi, '$1')
+  // Remove filler words — keep them only if they're the entire utterance
+  text = text.split(/\s+/)
+    .filter((w, i, arr) => {
+      const lower = w.toLowerCase().replace(/[.,!?]/g, '')
+      if (arr.length === 1) return true
+      return !FILLER_WORDS.has(lower)
+    })
+    .join(' ')
+  // Trim whitespace and stray punctuation
+  text = text.replace(/\s+/g, ' ').trim()
+  return text
+}
+
 function RoomDetailPage() {
   const { roomId } = useParams()
   const navigate = useNavigate()
@@ -596,7 +639,13 @@ function RoomDetailPage() {
 
       // Process the transcription result
       if (nextItem.text && nextItem.text.trim()) {
-        const text = nextItem.text.trim()
+        // Clean up the text: collapse word repetitions, remove filler words
+        const text = cleanUpTranscript(nextItem.text)
+        if (!text) {
+          console.log(`[TRANSCRIPTION] Sequence ${nextItem.sequence} was all filler, skipping`)
+          pendingSequenceRef.current++
+          continue
+        }
         console.log(`[TRANSCRIPTION] Processing sequence ${nextItem.sequence}: "${text.substring(0, 50)}..."`)
         finalTranscriptRef.current += text + ' '
         accumulatedTranscriptRef.current += text + ' '
