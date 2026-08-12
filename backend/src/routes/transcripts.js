@@ -5,6 +5,7 @@ import RoomMember from '../models/RoomMember.js'
 import TopicMarker from '../models/TopicMarker.js'
 import { authenticate } from '../middleware/auth.js'
 import { maybeGenerateAutoTopic } from '../services/topicGenerator.js'
+import { getLastConfirmedTopic } from '../services/topicService.js'
 
 const router = express.Router()
 
@@ -72,47 +73,85 @@ router.post('/', authenticate, async (req, res) => {
         })
           .sort({ startMs: -1 }).lean()
 
+        // ── A: pass chunks (oldest->newest strings) so the heuristic
+        //    can aggregate them BEFORE noise stripping. This fixes
+        //    fragmented transcripts where chunk[0] is a greeting and
+        //    chunk[N] contains the actual concept. We still also
+        //    pass recentTranscripts for the AI / 90s window path.
+        const chunkTexts = stampRecent.map(t => (t.text || '').trim()).filter(Boolean)
+
+        // ── C: pre-load the last teacher-confirmed topic label so the
+        //    auto-topic generator can fall back to it when the AI is
+        //    unavailable AND the heuristic returns empty. This is the
+        //    "reuse last confirmed" branch.
+        const lastConfirmedLabel = await getLastConfirmedTopic({ roomId, beforeMs: nowMs })
+
         const proposal = await maybeGenerateAutoTopic({
           roomId,
           recentTranscripts: stampRecent,
           lastAutoTopic: lastAuto ? { label: lastAuto.label, startMs: lastAuto.startMs } : null,
-          nowMs
+          nowMs,
+          chunks: chunkTexts,
+          lastConfirmedTopic: lastConfirmedLabel
         })
 
-        if (!proposal.createNew || !proposal.label) return
+        if (!proposal || (!proposal.createNew && !proposal.reused)) return
+        if (!proposal.label) return
 
-        // ALWAYS close out the prior in-session auto topic when we create
-        // a new one. Previously this only ran when lastAuto.endMs was
-        // exactly null, but the creator stores endMs = nowMs + 5min, so
-        // the null check rarely fired. Now we close based on session
-        // scoping plus overlap with the new marker's range.
-        if (lastAuto && (lastAuto.endMs == null || lastAuto.endMs > nowMs)) {
-          await TopicMarker.updateOne(
-            { _id: lastAuto._id },
-            { $set: { endMs: nowMs - 1 } }
-          )
-        }
+        if (proposal.createNew) {
+          // ALWAYS close out the prior in-session auto topic when we create
+          // a new one. Previously this only ran when lastAuto.endMs was
+          // exactly null, but the creator stores endMs = nowMs + 5min, so
+          // the null check rarely fired. Now we close based on session
+          // scoping plus overlap with the new marker's range.
+          if (lastAuto && (lastAuto.endMs == null || lastAuto.endMs > nowMs)) {
+            await TopicMarker.updateOne(
+              { _id: lastAuto._id },
+              { $set: { endMs: nowMs - 1 } }
+            )
+          }
 
-        const marker = await TopicMarker.create({
-          roomId,
-          teacherId: req.user._id,
-          startMs: nowMs,
-          // Auto-markers get a bounded span (default 5 minutes) so a stale
-          // marker from a previous session doesn't haunt the current one.
-          // The next auto-marker will close out this one via the
-          // `lastAuto.endMs == null || endMs > nowMs` branch above.
-          endMs: nowMs + 5 * 60 * 1000,
-          label: proposal.label,
-          source: proposal.source || 'auto',
-          confidence: proposal.confidence || null,
-          confirmed: false
-        })
+          const marker = await TopicMarker.create({
+            roomId,
+            teacherId: req.user._id,
+            startMs: nowMs,
+            // Auto-markers get a bounded span (default 5 minutes) so a stale
+            // marker from a previous session doesn't haunt the current one.
+            // The next auto-marker will close out this one via the
+            // `lastAuto.endMs == null || endMs > nowMs` branch above.
+            endMs: nowMs + 5 * 60 * 1000,
+            label: proposal.label,
+            source: proposal.source || 'auto',
+            confidence: proposal.confidence || null,
+            confirmed: false
+          })
 
-        // Broadcast to the room (teacher + students)
-        const io = req.app.get('io')
-        const roomDoc = await Room.findById(roomId).select('code').lean()
-        if (io && roomDoc?.code) {
-          io.to(roomDoc.code).emit('teacher:topic-set', { marker })
+          // Broadcast to the room (teacher + students)
+          const io = req.app.get('io')
+          const roomDoc = await Room.findById(roomId).select('code').lean()
+          if (io && roomDoc?.code) {
+            io.to(roomDoc.code).emit('teacher:topic-set', { marker })
+          }
+        } else if (proposal.reused) {
+          // C-fallback reused path: heuristic was empty BUT we have a
+          // last confirmed topic. We did NOT create a new marker (that
+          // would fragment the timeline), but the teacher dashboard
+          // still needs to refresh its display. Emit a lightweight
+          // 'teacher:topic-set' event with marker:null so listeners
+          // know the current topic label without persisting a duplicate.
+          try {
+            const io = req.app.get('io')
+            const roomDoc = await Room.findById(roomId).select('code').lean()
+            if (io && roomDoc?.code) {
+              io.to(roomDoc.code).emit('teacher:topic-set', {
+                marker: null,
+                label: proposal.label,
+                source: 'inferred',
+                reused: true,
+                roomId
+              })
+            }
+          } catch (e) { /* best-effort */ }
         }
       } catch (err) {
         console.warn('[transcripts] auto-topic failed:', err?.message)

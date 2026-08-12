@@ -423,11 +423,40 @@ export async function annotateSpikesWithTopics ({ roomId, spikes }) {
   })
 }
 
+/**
+ * C-fallback: return the most recent teacher-confirmed TopicMarker label for a room.
+ * Used when the auto-topic heuristic returns empty AND the AI is unavailable
+ * -- the marker system still has the right answer in storage from the
+ * teacher's manual confirmation earlier in the lecture.
+ *
+ * @param {{ roomId: string, beforeMs?: number }} args
+ * @returns {Promise<string|null>} label, or null when no confirmed marker exists.
+ */
+export async function getLastConfirmedTopic ({ roomId, beforeMs } = {}) {
+  if (!roomId) return null
+  if (!mongoose.Types.ObjectId.isValid(String(roomId))) return null
+  const query = { roomId, confirmed: true }
+  if (typeof beforeMs === 'number' && Number.isFinite(beforeMs)) {
+    query.startMs = { $lte: beforeMs }
+  }
+  try {
+    const marker = await TopicMarker.findOne(query)
+      .sort({ startMs: -1, createdAt: -1 })
+      .lean()
+    if (!marker || !marker.label) return null
+    if (looksCorrupted(marker.label)) return null
+    return marker.label
+  } catch (e) {
+    return null
+  }
+}
+
 export default {
   setTopic,
   deleteTopic,
   listTopics,
   resolveTopicForOffset,
   resolveTopicsForOffsets,
-  annotateSpikesWithTopics
+  annotateSpikesWithTopics,
+  getLastConfirmedTopic
 }

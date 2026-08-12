@@ -185,8 +185,16 @@ function stripNoise (text) {
     .replace(/\([^)]*\)/g, ' ')
     // Repeated phrases like "I am locked. I am locked. I am locked." collapse
     // to a single instance (not removed entirely -- the repeated content
-    // word is itself a topic signal).
-    .replace(/\b(\w+(?:\s+\w+){0,3})\.?\s+(?:\1\.?\s*){1,}/gi, '$1 ')
+    // word is itself a topic signal). IMPORTANT: this regex is now
+    // CASE-SENSITIVE for the backreference match. The previous
+    // case-insensitive version (the 'i' flag) was collapsing
+    // case-mismatched duplicates like "photosynthesis. Photosynthesis"
+    // (mid-sentence lowercase vs sentence-start capital), destroying the
+    // proper-noun signal that Strategy 1b uses to pick 'Photosynthesis'
+    // as the topic. Genuine Whisper audio-loop repetitions are
+    // case-IDENTICAL (same word, same context), so dropping the 'i'
+    // flag is safe for the original use case.
+    .replace(/\b(\w+(?:\s+\w+){0,3})\.?\s+(?:\1\.?\s*){1,}/g, '$1 ')
     // Collapse whitespace
     .replace(/\s+/g, ' ')
     .trim()
@@ -228,6 +236,20 @@ function stripNoise (text) {
 const DEBUG_TOPIC = process.env.DEBUG_TOPIC === '1'
 
 export function extractTopicProxy (text) {
+  // ── A: accept string OR array of chunks ──
+  // When given an array, concatenate the chunks BEFORE noise-stripping so
+  // greetings/filler in early chunks don't drown out the actual concept
+  // in later chunks. We preserve insertion order: chunks[0] is the oldest,
+  // chunks[chunks.length-1] is the most recent.
+  if (Array.isArray(text)) {
+    const valid = text
+      .filter((c) => typeof c === 'string' && c.trim().length > 0)
+      .map((c) => c.trim())
+    if (valid.length === 0) return ''
+    if (valid.length === 1) return extractTopicProxy(valid[0])
+    // Concatenate with single space; stripNoise handles the rest.
+    return extractTopicProxy(valid.join(' '))
+  }
   if (!text || typeof text !== 'string') return ''
   const cleaned = stripNoise(text)
   if (!cleaned) {
@@ -609,14 +631,37 @@ export async function detectTopicShift ({ recentText, previousTopic }) {
  */
 export async function maybeGenerateAutoTopic ({
   roomId,
-  recentTranscripts,   // [{ text, recordingOffsetMs }]
+  recentTranscripts,   // [{ text, recordingOffsetMs }]  (legacy — still supported)
   lastAutoTopic,       // { label, startMs } | null
-  nowMs                // current recordingOffsetMs
+  nowMs,               // current recordingOffsetMs
+  chunks,              // string[]  (NEW: array of transcript chunks, oldest -> newest)
+  lastConfirmedTopic   // string | null  (NEW: C-fallback label, reused if heuristic returns empty)
 }) {
   const _skip = (reason) => {
     console.log(`[auto-topic] skip room=${roomId} reason="${reason}"`)
     return { createNew: false, reason }
   }
+
+  // ── A: accept chunks: string[] as the new preferred input ──
+  // Convert chunks -> recentTranscripts shape so the rest of the
+  // pipeline is unchanged. Chunks are assumed in chronological order
+  // (oldest -> newest). We map them to recordingOffsetMs in descending
+  // 90s window using nowMs.
+  if (Array.isArray(chunks) && chunks.length > 0 && !recentTranscripts) {
+    const cleanChunks = chunks
+      .filter((c) => typeof c === 'string' && c.trim().length > 0)
+      .map((c) => c.trim())
+    if (cleanChunks.length === 0) return _skip('chunks all empty')
+    // Spread them across the last 90s, oldest first.
+    const spanMs = 90000
+    const step = cleanChunks.length > 1 ? Math.floor(spanMs / cleanChunks.length) : 0
+    recentTranscripts = cleanChunks.map((text, i) => ({
+      text,
+      // Last chunk is the most recent, so its offset is closest to nowMs.
+      recordingOffsetMs: nowMs - (cleanChunks.length - 1 - i) * step
+    }))
+  }
+
   if (!recentTranscripts || recentTranscripts.length === 0) {
     return _skip('no recent transcripts')
   }
@@ -626,12 +671,43 @@ export async function maybeGenerateAutoTopic ({
   const recent = sorted.filter(t => nowMs - t.recordingOffsetMs < 90000)
   if (recent.length === 0) return _skip('no transcripts within 90s window')
 
+  // ── A: aggregate chunks for the heuristic ──
+  // Pass the original chunks (most-recent LAST) to extractTopicProxy so
+  // Strategy 1/1b/1c see a richer stream. This fixes the fragmented
+  // transcript case ('Hi everyone today...' + 'Photosynthesis is the...'
+  // → 'Photosynthesis') where the first chunk alone would yield only
+  // greeting/filler and Strategy 3 falls back to 'Photosynthesis' only by luck.
+  const chunkTexts = (Array.isArray(chunks) && chunks.length > 0)
+    ? chunks.filter((c) => typeof c === 'string' && c.trim().length > 0).map((c) => c.trim())
+    : recent.map(t => t.text)
+
   const text = recent.map(t => t.text).join(' ').trim()
+  // ── C (pre-check): if the new content is too short to extract a topic
+  //     AND we have a last-confirmed topic, reuse it immediately.
+  //     This prevents greeting-only short transcripts from dropping the
+  //     last confirmed topic out of the teacher's view.
+  if (text.length < 60 && lastConfirmedTopic && typeof lastConfirmedTopic === 'string' && lastConfirmedTopic.trim()) {
+    console.log(`[auto-topic] NEW room=${roomId} label="${lastConfirmedTopic}" via=confirmed_reuse_short conf=0.3 (text too short but confirmed available)`)
+    return {
+      createNew: true,
+      label: lastConfirmedTopic.trim(),
+      confidence: 0.3,
+      source: 'inferred',
+      reused: true
+    }
+  }
+
   if (text.length < 60) return _skip(`text too short (${text.length} < 60 chars)`)
 
-  // If we have a recent auto topic that just started, skip
-  if (lastAutoTopic && nowMs - lastAutoTopic.startMs < 60000) {
-    return _skip(`recent auto topic "${lastAutoTopic.label}" is <60s old`)
+  // If we have a recent auto topic that just started, skip.
+  // The recording-offset gap is small (each transcription window is ~10s
+  // and the auto-save hook fires per chunk), so a 60s cooldown would
+  // suppress the SECOND save -- the one that has the actual lecture
+  // content (the first save only carries the greeting). We use 8s here
+  // so consecutive 10s transcription windows both fire and the second
+  // one can correct the first (e.g. 'Interesting' → 'Photosynthesis').
+  if (lastAutoTopic && nowMs - lastAutoTopic.startMs < 8000) {
+    return _skip(`recent auto topic "${lastAutoTopic.label}" is <8s old`)
   }
 
   console.log(`[auto-topic] evaluating room=${roomId} textLen=${text.length} prevLabel="${lastAutoTopic?.label || '(none)'}"`)
@@ -650,8 +726,31 @@ export async function maybeGenerateAutoTopic ({
     return { createNew: true, label: aiResult.label, confidence: aiResult.confidence, source: 'auto' }
   }
 
-  // Fallback: heuristic extraction
-  const heuristicLabel = extractTopicProxy(text)
+  // Fallback: heuristic extraction.
+  // ── A: pass chunks if we have multiple, else single string ──
+  // Strategy 1/1b/1c need the rich stream; aggregating fragments into
+  // the same transcript before extraction is what fixes 'Hi everyone
+  // today...' + 'Photosynthesis is...' → 'Photosynthesis'.
+  const heuristicLabel = extractTopicProxy(
+    chunkTexts.length > 1 ? chunkTexts : text
+  )
+
+  // ── C: last-confirmed-topic fallback ──
+  // If the heuristic returned empty (greeting-only or fragmented mess
+  // with no salvageable concept) AND we have a last teacher-confirmed
+  // marker, reuse its label. This prevents "General Confusion" from
+  // being created when the lecture is actually mid-topic — students
+  // joining late still see the right topic.
+  if (!heuristicLabel && lastConfirmedTopic && typeof lastConfirmedTopic === 'string' && lastConfirmedTopic.trim()) {
+    console.log(`[auto-topic] NEW room=${roomId} label="${lastConfirmedTopic}" via=confirmed_reuse conf=0.3 (heuristic empty)`)
+    return {
+      createNew: true,
+      label: lastConfirmedTopic.trim(),
+      confidence: 0.3,
+      source: 'inferred',
+      reused: true
+    }
+  }
   if (!heuristicLabel) return _skip('heuristic returned empty (insufficient content tokens)')
 
   // If heuristic gives the same words as the last topic, skip

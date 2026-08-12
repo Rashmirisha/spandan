@@ -4,6 +4,7 @@ import Question from '../models/Question.js'
 import Response from '../models/Response.js'
 import Room from '../models/Room.js'
 import { config, AI_PROVIDERS } from '../config.js'
+import { generateLocalQuestions } from './localQuestionGenerator.js'
 
 // Re-export for convenience
 export { AI_PROVIDERS }
@@ -434,10 +435,19 @@ async function generateWithMiniMax(prompt) {
   // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
   const text = content || reasoning
   if (!text) {
+    // JSON.stringify(undefined) returns undefined (not a string), so .slice would throw.
+    // Stringify defensively — the user should see this trace, not a slice error.
+    const choiceStr = (() => { try { return JSON.stringify(choice).slice(0, 1500) } catch { return '<unstringifiable>' } })()
     console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      ' raw choice: ' + choiceStr)
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
+  }
+  if (!text) {
+    // Surface a clean, user-readable error instead of letting the caller see a stack-trace-like
+    // 500 with no actionable message. Common causes: missing API key, MiniMax 401, model timeout,
+    // or a transient upstream issue.
+    throw new Error('AI returned no content (check API key / provider status).')
   }
   return text
 }
@@ -544,8 +554,23 @@ export async function generateQuestions(transcript, cfg) {
     throw new Error('Transcript is required')
   }
 
+  // Local heuristic provider — no AI / no API key required. The demo MUST work without
+  // MiniMax / OpenAI keys, so this is the safest default when the provider is unspecified
+  // or unavailable.
+  if (provider === 'local' || provider === 'heuristic') {
+    console.log(`[gen:local] Generating ${numQuestions} questions from ${transcript.length}-char transcript (no AI)`)
+    const types = questionTypeMix && questionTypeMix.length > 0
+      ? questionTypeMix.flatMap(t => Array(Math.max(1, Math.round(numQuestions * (t.weight || 1))))).slice(0, numQuestions)
+      : null
+    return generateLocalQuestions(transcript, {
+      questionCount: numQuestions,
+      difficulty,
+      types
+    })
+  }
+
   // Use provided questionTypeMix or generate default based on numQuestions
-  const questionTypes = questionTypeMix 
+  const questionTypes = questionTypeMix
     ? generateFromMix(questionTypeMix, numQuestions)
     : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
@@ -554,34 +579,54 @@ export async function generateQuestions(transcript, cfg) {
 
   let responseText
 
-  switch (provider) {
-    case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
-      break
-    case 'openai':
-      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
-      responseText = await generateWithOpenAI(prompt)
-      break
-    case 'anthropic':
-      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
-      responseText = await generateWithAnthropic(prompt)
-      break
-    case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
-      responseText = await generateWithGoogle(prompt)
-      break
-    default:
-      throw new Error(`Unknown provider: ${provider}`)
+  try {
+    switch (provider) {
+      case 'minimax':
+        if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+        responseText = await generateWithMiniMax(prompt)
+        break
+      case 'openai':
+        if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
+        responseText = await generateWithOpenAI(prompt)
+        break
+      case 'anthropic':
+        if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
+        responseText = await generateWithAnthropic(prompt)
+        break
+      case 'google':
+        if (!config.googleApiKey) throw new Error('Google API key not configured')
+        responseText = await generateWithGoogle(prompt)
+        break
+      default:
+        throw new Error(`Unknown provider: ${provider}`)
+    }
+  } catch (aiError) {
+    // The AI provider failed (no API key, 401, network, parse error, etc.). Fall back to the
+    // local heuristic so the demo still produces questions. Without this fallback, the teacher
+    // would see the demo break when no provider is configured.
+    console.warn(`[gen:fallback] AI provider '${provider}' failed (${aiError.message}); falling back to local heuristic`)
+    return generateLocalQuestions(transcript, {
+      questionCount: numQuestions,
+      difficulty
+    })
   }
 
   console.log(`[gen] ${provider} returned ${responseText?.length || 0} chars; preview: ${JSON.stringify((responseText || '').slice(0, 140))}`)
-  const questions = parseQuestions(responseText, questionTypes)
+  let questions = []
+  try {
+    questions = parseQuestions(responseText, questionTypes)
+  } catch (parseError) {
+    console.error('[gen:parse-err]', parseError.message)
+    questions = []
+  }
   if (questions.length === 0) {
-    console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — see [gen:parse-fail] above for the raw text`)
-  } else {
-    console.log(`Generated ${questions.length} questions successfully`)
+    console.error(`[gen] parsed 0 questions from a ${responseText?.length || 0}-char ${provider} response (numQuestions=${numQuestions}, transcript=${transcript.length} chars) — falling back to local`)
+    return generateLocalQuestions(transcript, {
+      questionCount: numQuestions,
+      difficulty
+    })
   }
 
+  console.log(`Generated ${questions.length} questions successfully`)
   return questions
 }

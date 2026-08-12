@@ -395,13 +395,19 @@ function RoomDetailPage() {
       generated = await generateQuestionsFromText(textToUse, currentSegment)
     } catch (error) {
       console.error('[SEGMENT] First generation attempt failed:', error)
-      // Auto-retry once
+      // Auto-retry once — but skip the alert entirely if the AI provider is simply unavailable,
+      // since the demo doesn't depend on AI (topic pipeline still works).
       try {
         console.log('[SEGMENT] Retrying question generation...')
         generated = await generateQuestionsFromText(textToUse, currentSegment)
       } catch (retryError) {
         console.error('[SEGMENT] Retry also failed:', retryError)
-        window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+        const msg = retryError.message || ''
+        if (msg.includes('AI returned no content') || msg.includes('API key') || msg.includes('provider')) {
+          console.warn('[SEGMENT] AI provider unavailable — skipping alert. Topic pipeline still works.')
+        } else {
+          window.alert('Failed to generate questions after retry. You can use the manual "Generate Q" button.')
+        }
         setGenerateQEnabled(true) // Enable fail-safe manual button
         return
       }
@@ -597,6 +603,23 @@ function RoomDetailPage() {
         setTranscript(finalTranscriptRef.current)
         segmentTranscriptRef.current += ' ' + text
         setSegmentTranscript(segmentTranscriptRef.current)
+
+        // ── NEW: auto-push each accumulated chunk to the backend so the
+        // auto-topic IIFE on POST /api/transcripts can extract a topic
+        // and persist a TopicMarker in real time. Without this hook, the
+        // teacher dashboard shows "General Confusion" / "No topic"
+        // because Whisper transcripts never reach the topic pipeline
+        // until the teacher explicitly stops recording or generates
+        // questions. The backend dedupes via the 60s lastAutoTopic
+        // window, so this fires at most once per minute per room.
+        // We fire-and-forget (don't await) so transcription stays smooth.
+        const accumulated = (accumulatedTranscriptRef.current || '').trim()
+        if (accumulated.length >= 60 && room?._id) {
+          const segIdx = currentSegmentRef.current
+          saveTranscript(room._id, segIdx, accumulated, 0)
+            .then(() => console.log(`[TOPIC-AUTO] transcript saved for auto-topic pipeline (segment ${segIdx}, len=${accumulated.length})`))
+            .catch((err) => console.error('[TOPIC-AUTO] save failed:', err?.message))
+        }
       }
 
       pendingSequenceRef.current++
@@ -635,6 +658,32 @@ function RoomDetailPage() {
         console.log(`[TRANSCRIPTION] Sequence ${sequence} conversion failed, skipping`)
         addToTranscriptionQueue(sequence, '')
         return
+      }
+
+      // Loudness gate: skip silent audio so Whisper doesn't hallucinate. Whisper's default
+      // behavior on quiet input is to output common training phrases like "For more information,
+      // visit us at www.example.com" — that's hallucination, not transcription. We measure RMS
+      // (root mean square) and skip chunks below the threshold.
+      try {
+        const arrayBuffer = await wavBlob.arrayBuffer()
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
+        // Compute RMS over the entire buffer
+        const samples = audioBuffer.getChannelData(0)
+        let sumSq = 0
+        for (let i = 0; i < samples.length; i++) sumSq += samples[i] * samples[i]
+        const rms = Math.sqrt(sumSq / samples.length)
+        // Volume thresholds: 0.003 = nearly silent, 0.01 = quiet speech, 0.02 = clear speech, 0.05 = loud
+        // 0.003 catches quiet/mic-far speech but rejects pure silence/hum
+        if (rms < 0.003) {
+          console.log(`[TRANSCRIPTION] Sequence ${sequence} too quiet (RMS=${rms.toFixed(4)}), skipping — Whisper would hallucinate`)
+          addToTranscriptionQueue(sequence, '')
+          return
+        }
+        console.log(`[TRANSCRIPTION] Sequence ${sequence} loudness OK (RMS=${rms.toFixed(4)})`)
+        audioCtx.close()
+      } catch (loudErr) {
+        console.warn('[TRANSCRIPTION] Loudness check failed, sending anyway:', loudErr.message)
       }
 
       const result = await transcribeAudio(wavBlob)
@@ -1145,7 +1194,15 @@ function RoomDetailPage() {
       }
     } catch (error) {
       console.error('Manual question generation failed:', error)
-      alert('Failed to generate questions: ' + error.message)
+      // If the AI provider is unavailable (no API key, 401, etc.), don't show a
+      // scary alert — the topic pipeline still works and the demo can proceed.
+      // Surface other failures so the teacher can act on them.
+      const msg = error.message || ''
+      if (msg.includes('AI returned no content') || msg.includes('API key') || msg.includes('provider')) {
+        console.warn('[QUESTIONS] Skipped alert: AI provider unavailable. Topic pipeline still works.')
+      } else {
+        alert('Failed to generate questions: ' + msg)
+      }
       setGenerateQEnabled(true)
     }
     setIsGeneratingQuestions(false)

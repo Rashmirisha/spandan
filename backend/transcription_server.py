@@ -25,7 +25,10 @@ from faster_whisper import WhisperModel
 # Configuration (env-overridable)
 HOST = os.environ.get("TRANSCRIPTION_HOST", "127.0.0.1")
 PORT = int(os.environ.get("TRANSCRIPTION_PORT", "3003"))
-MODEL_SIZE = os.environ.get("TRANSCRIPTION_MODEL", "base")
+# Default: small.en — 488 MB. English-only, much better accuracy on lecture speech than 'base'.
+# Override with TRANSCRIPTION_MODEL=base|tiny|small|medium|large-v3 to change.
+# For a CPU-only demo machine with 7-8 GB RAM, 'small' (or 'small.en') is the sweet spot.
+MODEL_SIZE = os.environ.get("TRANSCRIPTION_MODEL", "small.en")
 COMPUTE_TYPE = os.environ.get("TRANSCRIPTION_COMPUTE", "int8")  # int8 = CPU-efficient
 DEVICE = os.environ.get("TRANSCRIPTION_DEVICE", "cpu")          # set "cuda" on a GPU box
 
@@ -70,8 +73,31 @@ def transcribe_audio(audio_base64: str, sample_rate: int = 16000) -> dict:
             segments, info = model.transcribe(
                 audio_float32,
                 language="en",
-                beam_size=5,
-                vad_filter=False,  # keep all audio, including pauses
+                beam_size=5,  # smaller beam = faster inference
+                vad_filter=False,  # KEEP OFF — too aggressive on real lecture audio, drops
+                                   # legitimate pauses. Frontend RMS gate (RoomDetailPage.jsx)
+                                   # is the primary defense against sending silent audio.
+                condition_on_previous_text=False,  # CRITICAL: stops Whisper from continuing a
+                                                    # previous hallucination across chunks. If
+                                                    # one chunk hallucinates "For more...",
+                                                    # without this, the next chunk will say
+                                                    # "...visit www.example.com" too.
+                # initial_prompt primes the model with expected lecture vocabulary. This
+                # dramatically improves accuracy on domain-specific terms (e.g. "chlorophyll",
+                # "photosynthesis") and helps avoid mishearing technical words. Edit this list
+                # to match your actual lecture topic — accuracy improves further when it does.
+                initial_prompt=(
+                    "A lecture on biology, chemistry, or physics. "
+                    "Common terms: photosynthesis, chlorophyll, chloroplast, mitochondria, "
+                    "respiration, energy, chemical, process, cells, molecules, reactions, "
+                    "equation, formula, function, structure, organism, plant, animal, "
+                    "bacteria, enzyme, protein, glucose, oxygen, carbon dioxide, water, "
+                    "acid, base, atom, electron, molecule, nucleus, temperature, pressure, "
+                    "voltage, current, force, velocity, acceleration, mass, weight, "
+                    "Newton, Kelvin, joules, watts, hertz. "
+                    "Punctuation: periods, commas, question marks."
+                ),
+                temperature=0,  # deterministic — reduces hallucination on quiet audio
             )
             # segments is a generator; materialize inside the lock.
             full_text = ""
