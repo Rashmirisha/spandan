@@ -711,8 +711,11 @@ function RoomDetailPage() {
         // questions. The backend dedupes via the 60s lastAutoTopic
         // window, so this fires at most once per minute per room.
         // We fire-and-forget (don't await) so transcription stays smooth.
+        // Always save as long as there's content — even short snippets
+        // are useful for the topic pipeline. The backend dedupes via
+        // the 8s maybeGenerateAutoTopic cooldown so we won't spam.
         const accumulated = (accumulatedTranscriptRef.current || '').trim()
-        if (accumulated.length >= 60 && room?._id) {
+        if (accumulated.length > 0 && room?._id) {
           const segIdx = currentSegmentRef.current
           saveTranscript(room._id, segIdx, accumulated, 0)
             .then(() => console.log(`[TOPIC-AUTO] transcript saved for auto-topic pipeline (segment ${segIdx}, len=${accumulated.length})`))
