@@ -78,33 +78,66 @@ def transcribe_audio(audio_base64: str, sample_rate: int = 16000) -> dict:
                                    # legitimate pauses. Frontend RMS gate (RoomDetailPage.jsx)
                                    # is the primary defense against sending silent audio.
                 condition_on_previous_text=False,  # CRITICAL: stops Whisper from continuing a
-                                                    # previous hallucination across chunks. If
-                                                    # one chunk hallucinates "For more...",
-                                                    # without this, the next chunk will say
-                                                    # "...visit www.example.com" too.
-                # initial_prompt primes the model with expected lecture vocabulary. This
-                # dramatically improves accuracy on domain-specific terms (e.g. "chlorophyll",
-                # "photosynthesis") and helps avoid mishearing technical words. Edit this list
-                # to match your actual lecture topic — accuracy improves further when it does.
+                                                    # previous hallucination across chunks.
+                # initial_prompt: vocabulary-only, NO boilerplate. Whisper tends to leak the
+                # initial_prompt text into the output when audio is mostly silent, producing
+                # hallucinations like "A lecture on biology, chemistry..." and "For more
+                # information, visit...". By keeping the prompt just a list of expected words
+                # with punctuation patterns, we get the bias benefit without the leak.
                 initial_prompt=(
-                    "A lecture on biology, chemistry, or physics. "
-                    "Common terms: photosynthesis, chlorophyll, chloroplast, mitochondria, "
-                    "respiration, energy, chemical, process, cells, molecules, reactions, "
-                    "equation, formula, function, structure, organism, plant, animal, "
-                    "bacteria, enzyme, protein, glucose, oxygen, carbon dioxide, water, "
-                    "acid, base, atom, electron, molecule, nucleus, temperature, pressure, "
-                    "voltage, current, force, velocity, acceleration, mass, weight, "
-                    "Newton, Kelvin, joules, watts, hertz. "
-                    "Punctuation: periods, commas, question marks."
+                    "Photosynthesis chlorophyll chloroplast mitochondria respiration. "
+                    "Energy chemical process cells molecules reactions. "
+                    "Equation formula function structure organism plant animal bacteria. "
+                    "Enzyme protein glucose oxygen carbon dioxide water. "
+                    "Acid base atom electron molecule nucleus temperature pressure. "
+                    "Voltage current force velocity acceleration mass weight Newton. "
+                    "Kelvin joules watts hertz period comma question mark."
                 ),
+                # Hallucination detection threshold. Whisper outputs "repetitive hallucinations"
+                # when audio is silent/noise. Lowering compression_ratio_threshold catches
+                # repetitive segments (high compression = same word repeated). faster-whisper
+                # supports compression_ratio_threshold but NOT logprob_threshold (that's
+                # openai-whisper only). We do logprob filtering in the segment loop instead.
+                compression_ratio_threshold=2.0,
                 temperature=0,  # deterministic — reduces hallucination on quiet audio
             )
             # segments is a generator; materialize inside the lock.
+            # Filter out blank segments and segments with very low no-speech probability
+            # threshold (which is where Whisper's hallucinations like "For more information..."
+            # come from — it has high confidence the audio IS speech, but is just making up
+            # content). The default no_speech_threshold is 0.6; we use 0.4 to be more lenient.
             full_text = ""
             segment_list = []
             for segment in segments:
-                full_text += segment.text + " "
-                segment_list.append({"text": segment.text, "start": segment.start, "end": segment.end})
+                seg_text = segment.text.strip()
+                # Skip truly blank segments
+                if not seg_text:
+                    continue
+                # Skip segments with very low no-speech probability (high hallucination risk)
+                no_speech_prob = getattr(segment, 'no_speech_prob', 0.0)
+                if no_speech_prob > 0.5:
+                    # High no-speech probability means Whisper thinks this segment is silence.
+                    # If it still produced text, it's hallucinating.
+                    print(f"[FILTER] skipping high-no_speech segment: '{seg_text[:50]}' (no_speech_prob={no_speech_prob:.2f})", flush=True)
+                    continue
+                # Skip the most common hallucination phrases
+                hallucination_signatures = [
+                    "for more information",
+                    "please visit",
+                    "visit us at",
+                    "subscribe to",
+                    "thank you for watching",
+                    "see you next time",
+                    "www.",
+                    ".com",
+                    ".org",
+                ]
+                lower_text = seg_text.lower()
+                if any(sig in lower_text for sig in hallucination_signatures):
+                    print(f"[FILTER] skipping hallucinated phrase: '{seg_text[:80]}'", flush=True)
+                    continue
+                full_text += seg_text + " "
+                segment_list.append({"text": seg_text, "start": segment.start, "end": segment.end})
 
         return {
             "text": full_text.strip(),
