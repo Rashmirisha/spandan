@@ -298,8 +298,16 @@ router.get('/', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to access responses for this room' })
     }
 
+    // A student may only ever read their OWN responses; only the room-owning teacher may read all
+    // responses for the room (or narrow to one student). Without this, a student who omitted the
+    // studentId query param bypassed the line-above guard and got every student's responses —
+    // including isCorrect/points — a BOLA that also leaked correct answers mid-poll.
     const filter = { roomId }
-    if (studentId) filter.studentId = studentId
+    if (isTeacher) {
+      if (studentId) filter.studentId = studentId
+    } else {
+      filter.studentId = currentUser._id
+    }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1)
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50))
