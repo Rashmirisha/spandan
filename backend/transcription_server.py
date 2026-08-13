@@ -79,20 +79,14 @@ def transcribe_audio(audio_base64: str, sample_rate: int = 16000) -> dict:
                                    # is the primary defense against sending silent audio.
                 condition_on_previous_text=False,  # CRITICAL: stops Whisper from continuing a
                                                     # previous hallucination across chunks.
-                # initial_prompt: vocabulary-only, NO boilerplate. Whisper tends to leak the
-                # initial_prompt text into the output when audio is mostly silent, producing
+                # initial_prompt: DISABLED. Even vocabulary-only prompts leak into Whisper's
+                # output when the audio is mostly silent/noisy, producing lecture-style
                 # hallucinations like "A lecture on biology, chemistry..." and "For more
-                # information, visit...". By keeping the prompt just a list of expected words
-                # with punctuation patterns, we get the bias benefit without the leak.
-                initial_prompt=(
-                    "Photosynthesis chlorophyll chloroplast mitochondria respiration. "
-                    "Energy chemical process cells molecules reactions. "
-                    "Equation formula function structure organism plant animal bacteria. "
-                    "Enzyme protein glucose oxygen carbon dioxide water. "
-                    "Acid base atom electron molecule nucleus temperature pressure. "
-                    "Voltage current force velocity acceleration mass weight Newton. "
-                    "Kelvin joules watts hertz period comma question mark."
-                ),
+                # information, visit us at www.mooji.org." Whisper does not need an
+                # initial_prompt to transcribe real speech accurately — the prompt is a
+                # vocabulary-bias trick that consistently backfires on classroom recordings.
+                # We rely on the no_speech_prob filter and signature filters below instead.
+                initial_prompt=None,
                 # Hallucination detection threshold. Whisper outputs "repetitive hallucinations"
                 # when audio is silent/noise. Lowering compression_ratio_threshold catches
                 # repetitive segments (high compression = same word repeated). faster-whisper

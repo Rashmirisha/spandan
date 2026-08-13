@@ -313,7 +313,27 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
   }
 
   if (transcripts.length > 0) {
-    const raw = extractTopicProxy(transcripts[0].text)
+    // Strategy A (multi-chunk): gather the latest 3–5 session-scoped
+    // transcripts (oldest→newest) before running the heuristic. A single
+    // chunk often captures only a fragment ("Hi everyone today we are
+    // going to understand"), which the heuristic would resolve to a
+    // greeting or empty. Aggregating 3–5 chunks gives the heuristic
+    // enough context to surface the actual concept (e.g. "Photosynthesis").
+    const since = new Date(new Date(roomStartedAt).getTime())
+    const recentChunks = await Transcript.find({
+      roomId,
+      createdAt: { $gte: since }
+    })
+      .sort({ segmentIndex: -1, createdAt: -1 })
+      .limit(5)
+      .lean()
+    const chunkTexts = recentChunks
+      .map(t => (t.text || '').trim())
+      .filter(Boolean)
+      .reverse() // oldest -> newest for extractTopicProxy
+    const raw = chunkTexts.length > 1
+      ? extractTopicProxy(chunkTexts)
+      : extractTopicProxy(transcripts[0].text)
     return {
       label: raw || 'General Confusion',
       note: '',
@@ -323,20 +343,27 @@ export async function resolveTopicForOffset ({ roomId, recordingOffsetMs, roomSt
   }
 
   // 2b. SOFT FALLBACK: if no transcript is in the ±15s window but the room
-  // has transcripts, use the most recent session-scoped transcript. Without
+  // has transcripts, use the most recent session-scoped transcripts. Without
   // roomStartedAt we cannot safely fall back, so return General Confusion.
   if (!roomStartedAt) {
     return { label: 'General Confusion', note: '', source: 'no_session', markerId: null }
   }
-  const lastTranscript = await Transcript.findOne({
+  const lastTranscripts = await Transcript.find({
     roomId,
     createdAt: { $gte: new Date(roomStartedAt) }
   })
     .sort({ segmentIndex: -1, createdAt: -1 })
+    .limit(5)
     .lean()
 
-  if (lastTranscript) {
-    const raw = extractTopicProxy(lastTranscript.text)
+  if (lastTranscripts.length > 0) {
+    const lastTexts = lastTranscripts
+      .map(t => (t.text || '').trim())
+      .filter(Boolean)
+      .reverse() // oldest -> newest
+    const raw = lastTexts.length > 1
+      ? extractTopicProxy(lastTexts)
+      : extractTopicProxy(lastTexts[0] || '')
     return {
       label: raw || 'General Confusion',
       note: '',

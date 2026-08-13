@@ -16,6 +16,11 @@ import {
   buildTopicHeat,
   buildHeatmap
 } from '../services/confusionScoring.js'
+import {
+  installOnIo,
+  resolveRecoveryRecipients,
+  noteRoomCode
+} from '../services/studentSocketRegistry.js'
 
 const router = express.Router()
 
@@ -138,8 +143,11 @@ router.get('/room/:roomId/heatmap', authenticate, authorize('teacher', 'admin'),
  *
  * POST /api/confusion/event/:eventId/request-feedback
  * - Auth: teacher only (must own the room)
- * - Effect: emit 'confusion:resolved' to the room code so each associated
- *   student sees "Did this explanation help?" popup.
+ * - Effect: emit 'confusion:resolved' ONLY to the sockets whose userId
+ *   hashes to one of the event's studentIds for this room's salt. A
+ *   student who did NOT press "I'm Lost" never sees the popup.
+ *   See services/studentSocketRegistry.js for the anonymous-hash → socket
+ *   lookup (HMAC-SHA256(userId, room.doubtSalt)).
  * - The event stays active. Auto-close happens in /feedback when all
  *   associated students have responded "understood".
  */
@@ -150,23 +158,98 @@ router.post('/event/:eventId/request-feedback', authenticate, authorize('teacher
     if (!evt) {
       return res.status(404).json({ success: false, error: 'Confusion event not found' })
     }
-    const room = await Room.findById(evt.roomId).select('code teacher').lean()
+    const room = await Room.findById(evt.roomId).select('code teacher doubtSalt').lean()
     if (!room) return res.status(404).json({ success: false, error: 'Room not found' })
     if (String(room.teacher) !== String(req.user._id) && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, error: 'Only the room teacher can request feedback' })
     }
     const io = req.app.get('io')
+    // Lazy-install the socket registry hook on first use. Idempotent.
+    if (io) installOnIo(io)
+
+    const studentHashes = new Set(evt.studentIds || [])
+    const expectedRespondents = evt.confusedStudentCount || studentHashes.size
+
     if (io && room.code) {
+      // Note the room code so the registry can count room members for
+      // diagnostics without an extra DB read.
+      noteRoomCode(String(evt.roomId), room.code)
+      const { socketIds, studentHashes: matchedHashes, roomMembers } = resolveRecoveryRecipients({
+        io,
+        roomId: String(evt.roomId),
+        roomSalt: room.doubtSalt,
+        studentHashes
+      })
       const payload = {
         roomId: String(evt.roomId),
         eventId: String(evt._id),
         topic: evt.topicLabel || 'General Confusion',
-        expectedRespondents: evt.confusedStudentCount || (evt.studentIds ? evt.studentIds.length : 0)
+        expectedRespondents,
+        // Tell the client who exactly is being asked (so the frontend can
+        // log when expected != recipients-online for observability).
+        recipientsOnline: socketIds.size,
+        matchedHashes: matchedHashes.size,
+        roomMembers
       }
-      console.log('[confusion] request-feedback emit confusion:resolved to room', room.code, payload)
-      io.to(room.code).emit('confusion:resolved', payload)
+      // 1) Emit confusion:resolved ONLY to the targeted student sockets
+      //    (those whose hash is in event.studentIds). This is the PR #35
+      //    fix: the recovery popup goes ONLY to students who pressed
+      //    "I'm Lost", never to the whole room.
+      if (socketIds.size > 0) {
+        console.log('[confusion] request-feedback emit confusion:resolved to', socketIds.size, 'targeted sockets (of', roomMembers, 'room members,', expectedRespondents, 'expected) for room', room.code, 'event', String(evt._id))
+        for (const sid of socketIds) {
+          io.to(sid).emit('confusion:resolved', payload)
+        }
+      } else {
+        console.log('[confusion] request-feedback: no live sockets match event.studentIds — student prompt will surface when those students reconnect. room=', room.code, 'event=', String(evt._id), 'expectedRespondents=', expectedRespondents)
+      }
+
+      // 2) Emit confusion:resolved ALSO to the room (minus the targeted
+      //    sockets we already sent to) so the teacher's dashboard can
+      //    clear its active-event display and start the feedback tally.
+      //    We use the targeted socket list to avoid double-delivery to
+      //    students (who would otherwise see the popup twice).
+      try {
+        const adapter = io.sockets.adapter
+        const roomSet = adapter && adapter.rooms && adapter.rooms.get(room.code)
+        if (roomSet) {
+          const teacherPayload = { ...payload }
+          // The teacher dashboard cares about the event, not the student
+          // popup, so we can keep the same payload shape.
+          for (const sid of roomSet) {
+            if (socketIds.has(sid)) continue // already sent above
+            const sock = io.sockets.sockets.get(sid)
+            if (!sock) continue
+            // Only deliver to sockets that represent the teacher (or any
+            // non-student observer). Student sockets have already been
+            // covered above (or intentionally excluded because their hash
+            // isn\'t in event.studentIds).
+            const role = sock.data?.role
+            if (role === 'teacher' || role === 'admin') {
+              io.to(sid).emit('confusion:resolved', teacherPayload)
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[confusion] request-feedback: teacher-dashboard emit failed (non-fatal):', err.message)
+      }
     }
-    res.json({ success: true, event: formatForClient(evt) })
+    res.json({
+      success: true,
+      event: formatForClient(evt),
+      // Surface targeting info to the caller (teacher dashboard) so they
+      // can show "X students were notified".
+      targeting: {
+        expectedRespondents,
+        studentHashes: studentHashes.size,
+        recipientsOnline: io ? resolveRecoveryRecipients({
+          io,
+          roomId: String(evt.roomId),
+          roomSalt: room.doubtSalt,
+          studentHashes
+        }).socketIds.size : 0
+      }
+    })
   } catch (err) {
     console.error('[confusion] request-feedback error:', err)
     res.status(500).json({ success: false, error: 'Failed to request feedback' })
