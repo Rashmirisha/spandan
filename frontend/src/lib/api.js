@@ -140,8 +140,17 @@ export const confusionApi = {
   getHistory: (roomId, limit = 50) => api.get(`/confusion/room/${roomId}?limit=${limit}`),
   getHeatmap: (roomId, opts = {}) => api.get(`/confusion/room/${roomId}/heatmap?bucketMs=${opts.bucketMs || 60000}&windowMs=${opts.windowMs || 600000}`),
   getTopicHeat: (roomId, topN = 10) => api.get(`/confusion/room/${roomId}/topic-heat?topN=${topN}`),
-  // RECOVERY FLOW: teacher requests student feedback on an active event
+  // RECOVERY FLOW: teacher requests student feedback on an active event.
+  // Returns: { success, event, pollId, pollNumber, alreadyActive, targeting }
+  // The teacher dashboard stores `pollId` so subsequent feedback events
+  // from students can be matched to the current poll (discarding stale
+  // updates from old polls).
   requestFeedback: (eventId) => api.post(`/confusion/event/${eventId}/request-feedback`),
-  // RECOVERY FLOW: student responds with understood / still_confused
-  submitFeedback: (eventId, answer) => api.post(`/confusion/event/${eventId}/feedback`, { answer })
+  // RECOVERY FLOW: student responds with understood / still_confused.
+  // Body now includes the `pollId` (from the socket confusion:resolved
+  // event the student just received) so the response is recorded against
+  // the correct poll -- never against an old/superseded poll.
+  submitFeedback: (eventId, answer, pollId) => api.post(`/confusion/event/${eventId}/feedback`, { answer, pollId }),
+  // RECOVERY FLOW: history (for analytics / debug only -- not the active dashboard).
+  listRecoveryPolls: (eventId) => api.get(`/confusion/event/${eventId}/recovery-polls`)
 }

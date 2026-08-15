@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import { ConfusionEvent, Room } from '../models/index.js'
 import { resolveTopicForOffset } from './topicService.js'
 import { scoreEvent } from './confusionScoring.js'
+import { closeActivePollsForEvent } from './recoveryPollService.js'
 
 /**
  * confusionEventService -- live "what topic are students confused about RIGHT NOW?"
@@ -315,7 +316,7 @@ export async function closeAllActiveForRoom (roomId) {
  * Poll lifecycle reset — called when a new poll starts.
  *
  * Closes any active ConfusionEvents for this room (so the next student
- * press starts a fresh event) and clears their feedbackTallies so the
+ * press starts a fresh event) and clears their feedback-by-student map so the
  * teacher dashboard's recovery counters start from zero on the new poll.
  *
  * Returns the IDs of the events that were closed (for telemetry).
@@ -338,7 +339,14 @@ export async function resetPollStateForRoom (roomId) {
   // Drop any in-memory feedback tallies for these events so the next poll
   // starts with a fresh { understood: 0, stillConfused: 0 } reading.
   for (const id of ids) {
-    feedbackTallies.delete(id)
+    feedbackByStudent.delete(id)
+  }
+  // Also close any active RecoveryPoll rows for these events. New question
+  // boundary = new confusion boundary = new recovery context.
+  for (const id of ids) {
+    try {
+      await closeActivePollsForEvent(id, 'event_closed')
+    } catch (_) { /* best-effort */ }
   }
   return ids
 }
@@ -362,26 +370,76 @@ export async function resolveEventByTeacher (eventId) {
 /**
  * RESOLVED PROMPT: student feedback on a (presumably teacher-resolved) event.
  *
- *   answer='understood'    -> increment understoodCount (in-memory tally)
- *   answer='still_confused' -> reopen the event (status='active'),
- *                              increment reopenedCount
+ *   answer='understood'     -> set this student's state to 'understood'
+ *   answer='still_confused' -> set this student's state to 'still_confused'
+ *   (and implicitly reopen the event upstream)
  *
- * The in-memory understoodCount is keyed by eventId and survives within the
- * process lifetime. (Restart loss is acceptable for the demo -- the teacher
- * dashboard re-fetches event.reopenedCount from Mongo on reconnect.)
+ * Per-student dedup: a student contributes at most ONE current state to the
+ * tally. Subsequent responses from the same student overwrite their previous
+ * state -- they do not increment the count. This is the PR #35 fix for the
+ * "one student spamming 'Still Confused' inflates the dashboard count" bug.
+ *
+ * Identity is the same anonymous HMAC hash used by attachSignalToEvent
+ * (HMAC-SHA256(userId, room.doubtSalt), 64 hex chars). The hash is recomputed
+ * by the route handler -- this service trusts the caller to pass it.
+ *
+ * The per-event map is in-memory and survives within the process lifetime.
+ * (Restart loss is acceptable for the demo -- the teacher dashboard re-fetches
+ * event.reopenedCount from Mongo on reconnect.)
  */
-const feedbackTallies = new Map() // eventId -> { understood: n, stillConfused: n }
+// eventId -> Map<studentHash, 'understood' | 'still_confused'>
+const feedbackByStudent = new Map()
 
-export function recordFeedback (eventId, answer) {
-  const tally = feedbackTallies.get(String(eventId)) || { understood: 0, stillConfused: 0 }
-  if (answer === 'understood') tally.understood += 1
-  else if (answer === 'still_confused') tally.stillConfused += 1
-  feedbackTallies.set(String(eventId), tally)
-  return { ...tally }
+function tallyFromMap (perEvent) {
+  let understood = 0
+  let stillConfused = 0
+  if (perEvent) {
+    for (const v of perEvent.values()) {
+      if (v === 'understood') understood++
+      else if (v === 'still_confused') stillConfused++
+    }
+  }
+  // `responded` = unique students who have answered the recovery poll
+  // (regardless of which answer they picked). This is the recovery metric's
+  // DENOMINATOR, NOT evt.confusedStudentCount (which can be polluted by
+  // historical / stale studentIds from prior sessions or test runs).
+  return {
+    understood,
+    stillConfused,
+    responded: understood + stillConfused
+  }
+}
+
+export function recordFeedback (eventId, studentHash, answer) {
+  const eid = eventId != null ? String(eventId) : ''
+  if (!eid || !studentHash) {
+    throw new Error('recordFeedback: eventId and studentHash are required')
+  }
+  if (answer !== 'understood' && answer !== 'still_confused') {
+    throw new Error(`recordFeedback: invalid answer "${answer}" (expected "understood" or "still_confused")`)
+  }
+  let perEvent = feedbackByStudent.get(eid)
+  if (!perEvent) {
+    perEvent = new Map()
+    feedbackByStudent.set(eid, perEvent)
+  }
+  // Overwrite: a student's current state is exactly ONE value.
+  perEvent.set(String(studentHash), answer)
+  return tallyFromMap(perEvent)
 }
 
 export function getFeedbackTally (eventId) {
-  return feedbackTallies.get(String(eventId)) || { understood: 0, stillConfused: 0 }
+  return tallyFromMap(feedbackByStudent.get(String(eventId)))
+}
+
+/**
+ * Internal: drop a forgotten event's in-memory recovery state. Used on
+ * hard-close paths so the map doesn't grow unbounded across long server
+ * lifetimes. No-op if unknown.
+ */
+export function _pruneFeedbackTally (eventId) {
+  feedbackByStudent.delete(String(eventId))
+  return true
 }
 
 /**

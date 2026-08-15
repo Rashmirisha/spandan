@@ -13,8 +13,12 @@ import {
   listForRoom,
   closeEvent,
   closeAllActiveForRoom,
-  formatForClient
+  formatForClient,
+  recordFeedback,
+  getFeedbackTally,
+  _pruneFeedbackTally
 } from '../services/confusionEventService.js'
+import { hashStudent } from '../services/doubtService.js'
 import { ConfusionEvent, Room, DoubtSignal, TopicMarker, User } from '../models/index.js'
 import * as topicService from '../services/topicService.js'
 import * as doubtService from '../services/doubtService.js'
@@ -528,5 +532,329 @@ describe('integration with doubtService + topicService', () => {
     const active = await getActiveForRoom(FAKE_ROOM_ID)
     expect(active.confusedStudentCount).toBe(2)
     expect(active.signalIds.length).toBe(2)
+  })
+})
+
+// ─── recordFeedback dedup (PR #35 regression) ────────────────────────────────
+//
+// Bug being regression-tested:
+//   The teacher dashboard recovery-poll tally used a flat counter
+//   `feedbackTallies` keyed only by eventId -- every response event incremented
+//   the count, so one student spamming "Still Confused" four times made the
+//   dashboard show "Still Confused: 4" and "Recovery: 0/4 (0%)" instead of
+//   "Still Confused: 1" and "Recovery: 0/1 (0%)".
+//
+// Fix: the tally is now keyed by (eventId, studentHash) where studentHash is
+// the same HMAC-SHA256(userId, room.doubtSalt) used by attachSignalToEvent.
+// Repeated responses from the same student overwrite their state -- they do
+// NOT inflate the count.
+
+describe('recordFeedback -- per-student dedup (PR #35)', () => {
+  const EVENT_ID = 'cccccccccccccccccccccccc'
+  const SALT = 'room-salt-xyz'
+
+  // Real HMAC-SHA256 hashes (deterministic from fixed inputs)
+  const studentA = hashStudent('userId-aaa', SALT)
+  const studentB = hashStudent('userId-bbb', SALT)
+  const studentC = hashStudent('userId-ccc', SALT)
+
+  beforeEach(() => {
+    // Per-describe isolation: clear the in-memory feedback map so each test
+    // starts from a clean eventId entry.
+    _pruneFeedbackTally(EVENT_ID)
+  })
+
+  test('rejects missing eventId or studentHash', () => {
+    expect(() => recordFeedback(null, studentA, 'understood')).toThrow(/eventId and studentHash are required/)
+    expect(() => recordFeedback(EVENT_ID, null, 'understood')).toThrow(/eventId and studentHash are required/)
+    expect(() => recordFeedback(EVENT_ID, '', 'understood')).toThrow(/eventId and studentHash are required/)
+  })
+
+  test('rejects invalid answer', () => {
+    expect(() => recordFeedback(EVENT_ID, studentA, 'maybe')).toThrow(/invalid answer/)
+    expect(() => recordFeedback(EVENT_ID, studentA, '')).toThrow(/invalid answer/)
+    expect(() => recordFeedback(EVENT_ID, studentA, null)).toThrow(/invalid answer/)
+  })
+
+  test('one student responding Still Confused 4 times -> count = 1', () => {
+    let tally
+    tally = recordFeedback(EVENT_ID, studentA, 'still_confused')
+    tally = recordFeedback(EVENT_ID, studentA, 'still_confused')
+    tally = recordFeedback(EVENT_ID, studentA, 'still_confused')
+    tally = recordFeedback(EVENT_ID, studentA, 'still_confused')
+    expect(tally).toEqual({ understood: 0, stillConfused: 1, responded: 1 })
+  })
+
+  test('one student responding Understood 4 times -> count = 1', () => {
+    let tally
+    tally = recordFeedback(EVENT_ID, studentA, 'understood')
+    tally = recordFeedback(EVENT_ID, studentA, 'understood')
+    tally = recordFeedback(EVENT_ID, studentA, 'understood')
+    tally = recordFeedback(EVENT_ID, studentA, 'understood')
+    expect(tally).toEqual({ understood: 1, stillConfused: 0, responded: 1 })
+  })
+
+  test('same student changing Still Confused -> Understood -> final state is Understood', () => {
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    expect(getFeedbackTally(EVENT_ID)).toEqual({ understood: 0, stillConfused: 1, responded: 1 })
+    const after = recordFeedback(EVENT_ID, studentA, 'understood')
+    expect(after).toEqual({ understood: 1, stillConfused: 0, responded: 1 })
+    expect(getFeedbackTally(EVENT_ID)).toEqual({ understood: 1, stillConfused: 0, responded: 1 })
+  })
+
+  test('same student alternating then landing on Still Confused -> final state is Still Confused', () => {
+    recordFeedback(EVENT_ID, studentA, 'understood')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'understood')
+    const final = recordFeedback(EVENT_ID, studentA, 'still_confused')
+    expect(final).toEqual({ understood: 0, stillConfused: 1, responded: 1 })
+  })
+
+  test('multiple unique students are counted correctly', () => {
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused') // dup
+    recordFeedback(EVENT_ID, studentB, 'still_confused')
+    recordFeedback(EVENT_ID, studentC, 'understood')
+    recordFeedback(EVENT_ID, studentC, 'understood') // dup
+    const tally = getFeedbackTally(EVENT_ID)
+    expect(tally).toEqual({ understood: 1, stillConfused: 2, responded: 3 })
+  })
+
+  test('different eventIds maintain separate tallies', () => {
+    const otherEventId = 'dddddddddddddddddddddddd'
+    try {
+      recordFeedback(EVENT_ID, studentA, 'understood')
+      recordFeedback(otherEventId, studentA, 'still_confused')
+      expect(getFeedbackTally(EVENT_ID)).toEqual({ understood: 1, stillConfused: 0, responded: 1 })
+      expect(getFeedbackTally(otherEventId)).toEqual({ understood: 0, stillConfused: 1, responded: 1 })
+    } finally {
+      _pruneFeedbackTally(otherEventId)
+    }
+  })
+
+  test('repeated responses do NOT inflate the dashboard counts (the original bug)', () => {
+    // Student A: 4 x Still Confused
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    // Student B: 1 x Still Confused
+    recordFeedback(EVENT_ID, studentB, 'still_confused')
+    // Student C: 2 x Understood
+    recordFeedback(EVENT_ID, studentC, 'understood')
+    recordFeedback(EVENT_ID, studentC, 'understood')
+    // 7 response events, 3 unique students
+    const tally = getFeedbackTally(EVENT_ID)
+    expect(tally.understood).toBe(1)
+    expect(tally.stillConfused).toBe(2)
+    expect(tally.responded).toBe(3)
+  })
+
+  test('then Student A presses Understood -> flips to Understood', () => {
+    // Initial: A pressed Still Confused 4 times
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    // Then Student A presses Understood
+    const final = recordFeedback(EVENT_ID, studentA, 'understood')
+    expect(final).toEqual({ understood: 1, stillConfused: 0, responded: 1 })
+  })
+
+  test('different userIds with different salts produce different hashes (no cross-student leak)', () => {
+    // Different salt -> different hash -> separate student entries.
+    const studentA_otherSalt = hashStudent('userId-aaa', 'different-salt')
+    expect(studentA_otherSalt).not.toBe(studentA)
+    recordFeedback(EVENT_ID, studentA, 'still_confused')
+    recordFeedback(EVENT_ID, studentA_otherSalt, 'still_confused')
+    const tally = getFeedbackTally(EVENT_ID)
+    // Two distinct hashes -> count = 2 even though same userId.
+    expect(tally.stillConfused).toBe(2)
+    expect(tally.responded).toBe(2)
+  })
+
+  test('getFeedbackTally returns zeros for unknown eventId', () => {
+    expect(getFeedbackTally('ffffffffffffffffffffffff')).toEqual({ understood: 0, stillConfused: 0, responded: 0 })
+  })
+
+  test('recovery denominator uses unique students (responded = u + sc, NOT confusedStudentCount)', async () => {
+    // Smoke: the recovery-population denominator (responded) is unique
+    // students who answered the recovery poll, regardless of how many
+    // historically pressed "I'm Lost" (which can be polluted by stale
+    // studentIds from prior sessions/tests).
+    const sig1Id = new mongoose.Types.ObjectId()
+    const r1 = await attachSignalToEvent({
+      roomId: FAKE_ROOM_ID,
+      signalId: sig1Id.toString(),
+      studentHash: studentA,
+      topicContext: { label: 'X', source: 'transcript', markerId: null }
+    })
+    expect(r1.action).toBe('created')
+    const sig2Id = new mongoose.Types.ObjectId()
+    const r2 = await attachSignalToEvent({
+      roomId: FAKE_ROOM_ID,
+      signalId: sig2Id.toString(),
+      studentHash: studentB,
+      topicContext: { label: 'X', source: 'transcript', markerId: null }
+    })
+    expect(r2.action).toBe('merged')
+    const evt = await getActiveForRoom(FAKE_ROOM_ID)
+    expect(evt.confusedStudentCount).toBe(2) // original "I'm Lost" = 2
+
+    // Now recovery poll: both students respond Still Confused multiple times.
+    recordFeedback(String(evt._id), studentA, 'still_confused')
+    recordFeedback(String(evt._id), studentA, 'still_confused')
+    recordFeedback(String(evt._id), studentB, 'still_confused')
+    const tally = getFeedbackTally(String(evt._id))
+    expect(tally.stillConfused).toBe(2)
+    expect(tally.responded).toBe(2) // recovery denominator = 2
+
+    // User scenario: only 2 of the original 2 actually answered. Recovery
+    // % is 0% (0 understood / 2 responded), not 0% over a polluted 8.
+    const recoveryPercent = tally.responded > 0
+      ? Math.round((tally.understood / tally.responded) * 100)
+      : 0
+    expect(recoveryPercent).toBe(0)
+    expect(tally.responded).toBeLessThanOrEqual(evt.confusedStudentCount)
+  })
+
+  test('user scenario: 8 originally-confused, only 2 answer recovery -> denominator = 2', async () => {
+    // Simulate the user's exact scenario: many historical hashes in
+    // evt.studentIds, but only a couple unique students actually respond.
+    // Simulate "8 originally confused" by seeding the in-memory map with
+    // 8 distinct historical hashes via attachSignalToEvent calls (we use 8
+    // synthetic signalIds so attachSignalToEvent creates/merges an event
+    // carrying all 8 hashes in evt.studentIds). Then 2 unique real
+    // students answer recovery.
+
+    // Wipe any existing event for this room from prior tests in this file.
+    // (jest --runInBand + afterEach in describe block above handles this;
+    // attachSignalToEvent creates a new one when topic matches.)
+
+    const eventId = 'cccccccccccccccccccccccc'
+    _pruneFeedbackTally(eventId)
+
+    // Seed 8 synthetic students via attachSignalToEvent so the ConfusionEvent
+    // carries all 8 hashes in evt.studentIds (simulating a polluted event).
+    const seedHashes = []
+    for (let i = 0; i < 8; i++) {
+      seedHashes.push(hashStudent(`historical-user-${i}`, SALT))
+      const r = await attachSignalToEvent({
+        roomId: FAKE_ROOM_ID,
+        signalId: new mongoose.Types.ObjectId().toString(),
+        studentHash: seedHashes[i],
+        topicContext: { label: 'Y', source: 'transcript', markerId: null }
+      })
+      // First one creates, rest merge (same topic 'Y')
+      if (i === 0) expect(r.action).toBe('created')
+      else expect(['merged', 'noop', 'created']).toContain(r.action)
+    }
+
+    const evt = await getActiveForRoom(FAKE_ROOM_ID)
+    expect(evt.confusedStudentCount).toBeGreaterThanOrEqual(8) // polluted
+
+    // Now: 2 unique real students respond to the recovery poll.
+    recordFeedback(eventId, studentA, 'understood')
+    recordFeedback(eventId, studentB, 'still_confused')
+
+    const tally = getFeedbackTally(eventId)
+    // Recovery denominator = responded = 2 (NOT 8)
+    expect(tally.responded).toBe(2)
+    expect(tally.understood).toBe(1)
+    expect(tally.stillConfused).toBe(1)
+
+    // Original-confused shown separately (the legacy field)
+    const originalConfused = evt.confusedStudentCount
+    expect(originalConfused).toBeGreaterThanOrEqual(8)
+
+    // Recovery % = 1 / 2 = 50%
+    const recoveryPercent = tally.responded > 0
+      ? Math.round((tally.understood / tally.responded) * 100)
+      : 0
+    expect(recoveryPercent).toBe(50)
+  })
+
+  test('user scenario: Student B spams Still Confused 5 times -> still 1', async () => {
+    const eventId = 'cccccccccccccccccccccccc'
+    _pruneFeedbackTally(eventId)
+    recordFeedback(eventId, studentA, 'understood')
+    recordFeedback(eventId, studentB, 'still_confused')
+    recordFeedback(eventId, studentB, 'still_confused')
+    recordFeedback(eventId, studentB, 'still_confused')
+    recordFeedback(eventId, studentB, 'still_confused')
+    recordFeedback(eventId, studentB, 'still_confused')
+    const tally = getFeedbackTally(eventId)
+    expect(tally.stillConfused).toBe(1)
+    expect(tally.responded).toBe(2)
+  })
+
+  test('user scenario: Student A spams Understood 3 times -> still 1', async () => {
+    const eventId = 'cccccccccccccccccccccccc'
+    _pruneFeedbackTally(eventId)
+    recordFeedback(eventId, studentA, 'understood')
+    recordFeedback(eventId, studentA, 'understood')
+    recordFeedback(eventId, studentA, 'understood')
+    recordFeedback(eventId, studentB, 'still_confused')
+    const tally = getFeedbackTally(eventId)
+    expect(tally.understood).toBe(1)
+    expect(tally.responded).toBe(2)
+  })
+
+  test('user scenario: Student changes SC -> U -> final state is U', async () => {
+    const eventId = 'cccccccccccccccccccccccc'
+    _pruneFeedbackTally(eventId)
+    recordFeedback(eventId, studentA, 'still_confused')
+    recordFeedback(eventId, studentA, 'still_confused')
+    recordFeedback(eventId, studentA, 'understood')
+    const tally = getFeedbackTally(eventId)
+    expect(tally.understood).toBe(1)
+    expect(tally.stillConfused).toBe(0)
+    expect(tally.responded).toBe(1)
+  })
+
+  test('historical ConfusionEvents do NOT affect a fresh event recovery count', async () => {
+    // Create event A, get students to respond, then create event B (different
+    // topic) and verify event B's tally starts from zero.
+    const eventA = 'eeeeeeeeeeeeeeeeeeeeeeee'
+    const eventB = 'bbbbbbbbbbbbbbbbbbbbbbbb'
+    _pruneFeedbackTally(eventA)
+    _pruneFeedbackTally(eventB)
+    try {
+      recordFeedback(eventA, studentA, 'still_confused')
+      recordFeedback(eventA, studentB, 'still_confused')
+      expect(getFeedbackTally(eventA)).toEqual({ understood: 0, stillConfused: 2, responded: 2 })
+      // Event B starts fresh.
+      expect(getFeedbackTally(eventB)).toEqual({ understood: 0, stillConfused: 0, responded: 0 })
+      recordFeedback(eventB, studentA, 'understood')
+      expect(getFeedbackTally(eventB)).toEqual({ understood: 1, stillConfused: 0, responded: 1 })
+      // Event A untouched.
+      expect(getFeedbackTally(eventA)).toEqual({ understood: 0, stillConfused: 2, responded: 2 })
+    } finally {
+      _pruneFeedbackTally(eventA)
+      _pruneFeedbackTally(eventB)
+    }
+  })
+
+  test('socket emit payload structure carries the new fields', () => {
+    // The /feedback route emits { originalConfused, eligibleRespondents,
+    // responded, understood, stillConfused, recoveryPercent, ... }.
+    // We verify the *shape* here at the service level: recordFeedback's
+    // return value must carry `responded` so the route can include it.
+    const eventId = 'fffffffffffffffeeddddd'
+    _pruneFeedbackTally(eventId)
+    recordFeedback(eventId, studentA, 'understood')
+    recordFeedback(eventId, studentB, 'still_confused')
+    const tally = getFeedbackTally(eventId)
+    // Shape contract for the /feedback route handler:
+    expect(tally).toHaveProperty('understood', 1)
+    expect(tally).toHaveProperty('stillConfused', 1)
+    expect(tally).toHaveProperty('responded', 2)
+    // recoveryPercent formula used in the route:
+    const recoveryPercent = tally.responded > 0
+      ? Math.round((tally.understood / tally.responded) * 100)
+      : 0
+    expect(recoveryPercent).toBe(50)
+    _pruneFeedbackTally(eventId)
   })
 })

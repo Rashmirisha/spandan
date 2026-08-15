@@ -1,11 +1,30 @@
 // Auto-topic generator -- watches rolling transcript windows and detects topic shifts.
-// Uses MiniMax AI when available; falls back to a key-noun extractor otherwise.
+//
+// Provider chain (highest priority first):
+//   1. GEMINI_API_KEY present and reachable -> Gemini (`detectGeminiTopicShift`).
+//   2. Otherwise -> local heuristic (`extractTopicProxy`) on the aggregated
+//      multi-chunk transcript. The heuristic is ALWAYS available (pure JS,
+//      no network) so the app never breaks when external APIs are down.
+//   3. Only when both return empty does the caller surface 'General Confusion'.
+//
+// `MINIMAX_API_KEY` based detection is preserved as `detectMiniMaxTopicShift`
+// for backward compatibility with the existing topicGenerator.test.js suite,
+// but it is intentionally NOT in the auto-topic chain anymore — Gemini is
+// the PRIMARY AI provider per product requirement.
 
 import 'dotenv/config'
 
 const MINIMAX_KEY = process.env.MINIMAX_API_KEY
 const MINIMAX_URL = process.env.MINIMAX_API_URL || 'https://api.minimaxi.chat/v1/chat/completions'
 const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.7'
+
+// Gemini provider config. Mirrors the existing pattern used in
+// questionService.js → generateWithGoogle() so the codebase stays
+// consistent. Backend-only — the API key is NEVER bundled into the
+// frontend.
+const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ''
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 
 const STOPWORDS = new Set([
   'the','and','for','with','that','this','have','from','they','will','what','when','about',
@@ -561,12 +580,119 @@ function sanitizeLabel (label) {
 }
 
 /**
- * Detect topic shift via MiniMax AI. Returns:
+ * Detect topic shift via Google Gemini (PRIMARY AI provider).
+ *
+ * Returns:
  *   { changed: boolean, label?: string, confidence?: number }
  *
- * If API fails or returns invalid JSON, returns null (caller falls back to heuristic).
+ * Returns `null` whenever the AI path can't be used so the caller can fall
+ * back to the local heuristic. Conditions that produce `null`:
+ *   - GEMINI_API_KEY (or GOOGLE_API_KEY) is missing
+ *   - The transcript is too short (< 30 chars after trim)
+ *   - The HTTP request throws (timeout, network error)
+ *   - The response status is non-2xx (401, 403, 429, 5xx, ...)
+ *   - The response body has no usable text payload
+ *   - The returned label is empty / looks corrupted
+ *
+ * The prompt is engineered to:
+ *   - ignore greetings, URLs, advertisements, and irrelevant speech
+ *   - return ONLY a 1–5 word Title Case label
+ *   - never return more than 60 chars
+ *
+ * If `chunks` (array of strings, oldest → newest) is provided, we join the
+ * last 3–5 chunks so Gemini sees the broader context — the first chunk
+ * alone often only contains a greeting or a fragmented sentence.
  */
-export async function detectTopicShift ({ recentText, previousTopic }) {
+export async function detectGeminiTopicShift ({ recentText, previousTopic, chunks }) {
+  if (!GEMINI_KEY) return null
+
+  // Aggregate chunks if provided. Caller convention: oldest → newest.
+  let text = recentText
+  if (Array.isArray(chunks) && chunks.length > 0) {
+    const clean = chunks
+      .filter((c) => typeof c === 'string' && c.trim().length > 0)
+      .map((c) => c.trim())
+    if (clean.length > 1) text = clean.slice(-5).join(' ') // last 3-5 chunks
+    else if (clean.length === 1) text = clean[0]
+  }
+  if (!text || text.trim().length < 30) return null
+
+  const systemPrompt = [
+    'You are a topic detector for a live classroom lecture.',
+    'Given the recent teacher transcript below, return a SHORT topic label (1-5 words, Title Case) naming what the lecture is actually about.',
+    'Rules:',
+    '- Ignore greetings (Hello, Hi, Good morning), filler (so, okay, right), URLs, and advertisements.',
+    '- If the teacher just started a new concept, return its name.',
+    '- If the teacher is mid-thought on the previous concept, return that concept.',
+    '- NEVER return more than 5 words. Prefer 1-3 words when possible.',
+    '- NEVER include punctuation, quotes, or trailing whitespace.',
+    'Respond with ONLY raw JSON of this exact shape: {"label":"<topic>","changed":<true|false>,"confidence":<0..1>}.',
+    '"changed" must be true if the new topic differs from the previous topic, false otherwise.'
+  ].join(' ')
+
+  const userPrompt = previousTopic
+    ? `Previous topic: "${previousTopic}"\n\nRecent transcript:\n"""${text.slice(-4000)}"""\n\nReturn JSON only.`
+    : `Recent transcript:\n"""${text.slice(-4000)}"""\n\nReturn JSON only.`
+
+  try {
+    const ctrl = new AbortController()
+    const timeout = setTimeout(() => ctrl.abort(), 8000)
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_KEY)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        systemInstruction: { role: 'system', parts: [{ text: systemPrompt }] },
+        generationConfig: {
+          temperature: 0.1,
+          // Gemini 3 reasoning models use thought tokens that count toward
+          // the output budget. maxOutputTokens must be large enough to fit
+          // both the reasoning (~50-150 tokens) AND the actual JSON reply.
+          maxOutputTokens: 500,
+          responseMimeType: 'application/json'
+        }
+      }),
+      signal: ctrl.signal
+    })
+    clearTimeout(timeout)
+    if (!res.ok) {
+      console.warn(`[topic:gemini] non-2xx status=${res.status} (falling back to heuristic)`)
+      return null
+    }
+    const json = await res.json()
+    const raw = json?.candidates?.[0]?.content?.parts?.[0]?.text
+    if (!raw || typeof raw !== 'string') return null
+
+    // Gemini occasionally wraps JSON in code fences even when responseMimeType
+    // is set; strip them defensively before parsing.
+    const stripped = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
+    let parsed
+    try { parsed = JSON.parse(stripped) } catch {
+      console.warn(`[topic:gemini] could not parse JSON response: ${raw.slice(0, 120)}`)
+      return null
+    }
+    const label = (parsed?.label || '').toString().trim().slice(0, 60)
+    if (!label) return null
+    return {
+      changed: parsed.changed !== false, // default to changed=true when no prior topic
+      label,
+      confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0.7))
+    }
+  } catch (e) {
+    console.warn(`[topic:gemini] request failed: ${e?.message || e} (falling back to heuristic)`)
+    return null
+  }
+}
+
+/**
+ * Detect topic shift via MiniMax AI (legacy / secondary provider — NOT used in
+ * the auto-topic chain anymore). Kept exported for backward compatibility with
+ * the existing test suite (topicGenerator.test.js → describe('detectTopicShift')).
+ *
+ * Returns:
+ *   { changed: boolean, label?: string, confidence?: number } | null
+ */
+export async function detectMiniMaxTopicShift ({ recentText, previousTopic }) {
   if (!recentText || recentText.trim().length < 30) return null
 
   const systemPrompt = `You are a topic detector for a live lecture. Given a recent chunk of teacher transcript, extract a SHORT topic label (2-5 words, Title Case) that names what's being discussed. Return ONLY JSON like {"label":"X","changed":true,"confidence":0.8} where "changed" is true only if the topic shifted compared to the previous topic. If the lecture is still on the same topic, return {"changed":false,"confidence":0.9}.`
@@ -614,6 +740,13 @@ export async function detectTopicShift ({ recentText, previousTopic }) {
   } catch (e) {
     return null
   }
+}
+
+// Backward-compatible alias so the existing test suite
+// (`detectTopicShift(...)` in topicGenerator.test.js) keeps working.
+// Implementation lives in `detectMiniMaxTopicShift` above.
+export async function detectTopicShift (args) {
+  return detectMiniMaxTopicShift(args)
 }
 
 /**
@@ -714,15 +847,25 @@ export async function maybeGenerateAutoTopic ({
 
   // If last auto topic is over 5min old and text has accumulated substantially,
   // try to detect shift via AI first; fall back to heuristic.
+  //
+  // PRIMARY AI provider: Gemini (`detectGeminiTopicShift`).
+  // FALLBACK chain: local heuristic (always available, pure JS).
+  // Returns null on:
+  //   - missing API key, 401/403, network errors, timeout,
+  //   - bad/empty JSON from Gemini, empty label.
   const previousLabel = lastAutoTopic?.label || null
-  const aiResult = await detectTopicShift({ recentText: text, previousTopic: previousLabel })
+  const aiResult = await detectGeminiTopicShift({
+    recentText: text,
+    previousTopic: previousLabel,
+    chunks
+  })
 
   if (aiResult) {
     if (!aiResult.changed) {
-      console.log(`[auto-topic] skip room=${roomId} reason="AI says no topic shift (label="${aiResult.label}")"`)
-      return { createNew: false, reason: 'ai_no_shift' }
+      console.log(`[auto-topic] skip room=${roomId} reason="gemini says no topic shift (label="${aiResult.label}")"`)
+      return { createNew: false, reason: 'gemini_no_shift' }
     }
-    console.log(`[auto-topic] NEW room=${roomId} label="${aiResult.label}" via=ai conf=${aiResult.confidence}`)
+    console.log(`[auto-topic] NEW room=${roomId} label="${aiResult.label}" via=gemini conf=${aiResult.confidence}`)
     return { createNew: true, label: aiResult.label, confidence: aiResult.confidence, source: 'auto' }
   }
 

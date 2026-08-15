@@ -35,8 +35,27 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
   const [pulseKey, setPulseKey] = useState(0)
   const prevCountRef = useRef(0)
   // RESOLVED PROMPT: feedback tally for the teacher dashboard
-  const [feedbackTally, setFeedbackTally] = useState({ understood: 0, stillConfused: 0, expectedRespondents: 0, needsMoreExplanation: false, autoClosed: false, reopenedCount: 0 })
+  // (PR #35 recovery-poll fix: recovery denominator is `responded` =
+  // unique students who answered, NOT evt.confusedStudentCount.)
+  const [feedbackTally, setFeedbackTally] = useState({
+    originalConfused: 0,
+    eligibleRespondents: 0,
+    responded: 0, // <- recovery denominator
+    understood: 0,
+    stillConfused: 0,
+    recoveryPercent: 0,
+    needsMoreExplanation: false,
+    autoClosed: false,
+    reopenedCount: 0
+  })
   const [resolving, setResolving] = useState(false)
+  // PR #35 (recovery-poll accumulation fix): the dashboard tracks WHICH
+  // poll its tally belongs to. Every teacher click of "Ask Students"
+  // creates a new pollId. Student feedback events whose pollId doesn't
+  // match `currentPollId` are discarded -- otherwise stale responses from
+  // a previous poll would accumulate into the new tally.
+  const [currentPollId, setCurrentPollId] = useState(null)
+  const [currentPollNumber, setCurrentPollNumber] = useState(0)
 
   const fetchAll = useCallback(async () => {
     if (!roomId) return
@@ -86,24 +105,46 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
       if (String(data.roomId) !== String(roomId)) return
       if (data.event) setLatest(data.event)
       setEvent(null)
+      // PR #35 (recovery-poll accumulation fix): the resolved event is
+      // scoped to a specific pollId. Lock the dashboard to that poll so
+      // late-arriving `confusion:feedback` events from OTHER polls get
+      // discarded instead of corrupting this tally.
+      if (data.pollId) {
+        setCurrentPollId(data.pollId)
+        setCurrentPollNumber(data.pollNumber || 0)
+      }
       // Reset tally for the next event (the resolved one is done).
       setFeedbackTally({
-      understood: 0,
-      stillConfused: 0,
-      expectedRespondents: data.expectedRespondents || 0,
-      needsMoreExplanation: false,
-      autoClosed: false,
-      reopenedCount: 0
-    })
+        originalConfused: data.originalConfused || 0,
+        eligibleRespondents: data.eligibleRespondents || 0,
+        responded: 0,
+        understood: 0,
+        stillConfused: 0,
+        recoveryPercent: 0,
+        needsMoreExplanation: false,
+        autoClosed: false,
+        reopenedCount: 0
+      })
       try { sounds.tap() } catch {}
     }
     // RESOLVED PROMPT: student responded -> update running tally on this card.
     const onFeedback = (data) => {
       if (String(data.roomId) !== String(roomId)) return
+      // PR #35 (recovery-poll accumulation fix): discard stale feedback
+      // events from a DIFFERENT poll than the one this dashboard is
+      // currently tracking. Without this, late `confusion:feedback`
+      // events from Poll #1 would corrupt the Poll #2 tally because the
+      // backend tallies are per-poll but the socket emits to the room.
+      if (data.pollId && currentPollId && data.pollId !== currentPollId) {
+        return
+      }
       setFeedbackTally({
+        originalConfused: data.originalConfused || 0,
+        eligibleRespondents: data.eligibleRespondents || 0,
+        responded: data.responded || 0, // <- recovery denominator
         understood: data.understood || 0,
         stillConfused: data.stillConfused || 0,
-        expectedRespondents: data.expectedRespondents || 0,
+        recoveryPercent: data.recoveryPercent || 0,
         needsMoreExplanation: !!data.needsMoreExplanation,
         autoClosed: !!data.autoClosed,
         reopenedCount: data.reopenedCount || 0
@@ -131,13 +172,22 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
       setEvent(null)
       setLatest(null)
       setFeedbackTally({
+        originalConfused: 0,
+        eligibleRespondents: 0,
+        responded: 0,
         understood: 0,
         stillConfused: 0,
-        expectedRespondents: 0,
+        recoveryPercent: 0,
         needsMoreExplanation: false,
         autoClosed: false,
         reopenedCount: 0
       })
+      // PR #35: clear poll-id lock so the next poll is open to fresh
+      // socket events. Without this, after a question boundary the
+      // dashboard would still filter incoming feedback to the now-stale
+      // pollId from the previous question.
+      setCurrentPollId(null)
+      setCurrentPollNumber(0)
       prevCountRef.current = 0
       setDisplayCount(0)
     }
@@ -153,7 +203,7 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
       socket.off('question:started', onPollReset)
       socket.off('poll:reset', onPollReset)
     }
-  }, [socket, roomId])
+  }, [socket, roomId, currentPollId])
 
   // Animated count-up: when target count increases, tween 0 -> target over ~600ms
   const card = event || latest
@@ -333,7 +383,34 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
                   if (!card?.id || resolving) return
                   setResolving(true)
                   try {
-                    await confusionApi.requestFeedback(card.id)
+                    // PR #35 (recovery-poll accumulation fix): capture
+                    // pollId + pollNumber from the response. The dashboard
+                    // uses these to discard stale `confusion:feedback`
+                    // socket events from previous polls -- otherwise
+                    // Poll #1 responses leak into the Poll #2 tally.
+                    const res = await confusionApi.requestFeedback(card.id)
+                    if (res?.pollId) {
+                      setCurrentPollId(res.pollId)
+                      setCurrentPollNumber(res.pollNumber || 0)
+                      // If this is a brand-new poll (not the same poll
+                      // already running), zero out the tally so it starts
+                      // clean. If `alreadyActive` is true the teacher
+                      // double-clicked and the response tally is still
+                      // authoritative, so keep it.
+                      if (!res.alreadyActive) {
+                        setFeedbackTally({
+                          originalConfused: 0,
+                          eligibleRespondents: 0,
+                          responded: 0,
+                          understood: 0,
+                          stillConfused: 0,
+                          recoveryPercent: 0,
+                          needsMoreExplanation: false,
+                          autoClosed: false,
+                          reopenedCount: 0
+                        })
+                      }
+                    }
                   } catch (e) {
                     console.error('[ConfusionAlertCard] request-feedback failed:', e?.message)
                   } finally {
@@ -344,23 +421,42 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
                 {resolving ? 'Requesting…' : '📣 Ask Students: Did this help?'}
               </button>
             )}
-            {(feedbackTally.expectedRespondents > 0 || feedbackTally.understood > 0 || feedbackTally.stillConfused > 0) && (() => {
+            {(feedbackTally.responded > 0 || feedbackTally.understood > 0 || feedbackTally.stillConfused > 0) && (() => {
               const u = feedbackTally.understood || 0
               const sc = feedbackTally.stillConfused || 0
-              // Total confused students for THIS event: fixed for the event's
-              // lifetime. Backend emits `expectedRespondents` =
-              // `evt.confusedStudentCount` (the count when the event was
-              // first recorded). We latch it once we see it so the total
-              // does not move even as the live count changes.
-              const total = Math.max(feedbackTally.expectedRespondents || 0, u + sc)
-              const score = total > 0 ? Math.round((u / total) * 100) : 0
-              const atFullRecovery = total > 0 && u >= total && sc === 0
+              // PR #35: show a "Poll #N" badge so the teacher can tell
+              // which recovery round the dashboard tally belongs to.
+              // Without this, a teacher clicking "Ask Students" twice
+              // would see an inflating tally with no way to know which
+              // poll produced which number.
+              const pollLabel = currentPollNumber > 0 ? `Poll #${currentPollNumber}` : 'Poll'
+              // PR #35 recovery-population fix:
+              //   Recovery denominator = `responded` (u + sc)
+              //   = unique students who actually answered the recovery poll.
+              //   NOT `expectedRespondents` / `originalConfused` -- those
+              //   count historical "I'm Lost" presses and would inflate the
+              //   denominator if a confused student left the room or was
+              //   recorded in a previous session/test run.
+              const responded = feedbackTally.responded || (u + sc)
+              const originalConfused = feedbackTally.originalConfused || 0
+              const score = responded > 0 ? Math.round((u / responded) * 100) : 0
+              const atFullRecovery = responded > 0 && sc === 0 && u > 0 && u >= responded
               return (
                 <div className="cac-recovery" aria-live="polite">
-                  <div className="cac-recovery-title">Recovery</div>
+                  <div className="cac-recovery-title">
+                    <span>Recovery</span>
+                    {currentPollNumber > 0 && (
+                      <span className="cac-recovery-poll" data-testid="cac-recovery-poll-number">📊 {pollLabel}</span>
+                    )}
+                  </div>
                   <div className="cac-recovery-row cac-recovery-row--totals">
+                    {originalConfused > 0 && (
+                      <span className="cac-recovery-pill cac-recovery-pill--original" data-testid="cac-recovery-original">
+                        🧑‍🎓 Originally Confused: {originalConfused}
+                      </span>
+                    )}
                     <span className="cac-recovery-pill cac-recovery-pill--total" data-testid="cac-recovery-total">
-                      👥 Confused: {total}
+                      👥 Respondents: {responded}
                     </span>
                     <span className="cac-recovery-pill cac-recovery-pill--yes" data-testid="cac-recovery-understood">
                       ✅ Understood: {u}
@@ -371,7 +467,7 @@ export default function ConfusionAlertCard ({ roomId, hasTranscript = true }) {
                   </div>
                   <div className="cac-recovery-row cac-recovery-row--score">
                     <span className="cac-recovery-score" data-score={score >= 70 ? 'good' : score >= 40 ? 'mid' : 'low'} data-testid="cac-recovery-score">
-                      📊 Recovery: {u} / {total} ({score}%)
+                      📊 Recovery: {u} / {responded} ({score}%)
                     </span>
                     {/* Needs More Explanation badge: shown when ANY student
                         clicked Still Confused. Event stays active. */}

@@ -2112,6 +2112,51 @@ html {
 .crp-text {
   font-size: 14px;
 }
+
+/* PR #35: error/retry row that surfaces a POST failure so the student
+   is never stuck on the popup. Hidden unless a real error occurred. */
+.crp-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 110, 110, 0.12);
+  border: 1px solid rgba(255, 110, 110, 0.32);
+  font-size: 13px;
+  color: #ffd6d6;
+  flex-wrap: wrap;
+}
+.crp-error-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.crp-error-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.crp-error-retry,
+.crp-error-dismiss {
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.crp-error-retry {
+  background: rgba(255, 200, 90, 0.85);
+  color: #2a1d00;
+}
+.crp-error-retry:hover { background: rgba(255, 210, 110, 0.95); }
+.crp-error-retry:disabled { opacity: 0.5; cursor: not-allowed; }
+.crp-error-dismiss {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.crp-error-dismiss:hover { background: rgba(255, 255, 255, 0.18); }
 .crp-feedback-row {
   display: flex;
   gap: 12px;
@@ -2197,6 +2242,22 @@ html {
   font-size: 11px;
   text-transform: uppercase;
   opacity: 0.7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cac-recovery-poll {
+  background: rgba(120, 180, 255, 0.18);
+  color: #cfe2ff;
+  border: 1px solid rgba(120, 180, 255, 0.32);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  opacity: 1;
 }
 .cac-recovery-row {
   display: flex;

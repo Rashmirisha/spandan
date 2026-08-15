@@ -17,9 +17,15 @@ import sounds from '../lib/sounds.js'
  */
 export default function ConfusionResolvedPrompt ({ roomId }) {
   const socket = useSocketStore(s => s.socket)
-  const [prompt, setPrompt] = useState(null) // { eventId, topic, receivedAt }
+  const [prompt, setPrompt] = useState(null) // { eventId, topic, pollId, pollNumber, receivedAt }
   const [submitting, setSubmitting] = useState(false)
   const [responded, setResponded] = useState(null) // 'understood' | 'still_confused' | null
+  // BUG FIX (PR #35): surfaced error state so the student is never
+  // permanently stuck on the popup. If the server returns 4xx/5xx we
+  // show a small error message + a manual Retry button. Without this,
+  // the previous code silently logged `console.error(...)` and the
+  // student had no way to recover without refreshing the page.
+  const [errorMsg, setErrorMsg] = useState(null)
 
   // Subscribe to the socket event
   useEffect(() => {
@@ -29,11 +35,14 @@ export default function ConfusionResolvedPrompt ({ roomId }) {
       if (roomId && String(data.roomId) !== String(roomId)) return
       setPrompt({
         eventId: data.eventId,
+        pollId: data.pollId, // NEW: scope the response to a single recovery round
+        pollNumber: data.pollNumber,
         topic: data.topic,
         closedAt: data.closedAt,
         receivedAt: Date.now()
       })
       setResponded(null)
+      setErrorMsg(null)
       // BUG FIX (recovery poll, second iteration): the success path of
       // respond() never resets `submitting`, so it stays true forever
       // and disables the buttons on every subsequent "Are you clear now?"
@@ -56,8 +65,19 @@ export default function ConfusionResolvedPrompt ({ roomId }) {
   const respond = useCallback(async (answer) => {
     if (!prompt || submitting) return
     setSubmitting(true)
+    setErrorMsg(null)
     try {
-      await confusionApi.submitFeedback(prompt.eventId, answer)
+      // Forward pollId so the backend records this response against the
+      // correct recovery poll (the one the teacher just started). If
+      // pollId is missing for some reason (e.g. very old server), the
+      // backend falls back to the currently-active poll.
+      const res = await confusionApi.submitFeedback(prompt.eventId, answer, prompt.pollId)
+      // Guard: the api helper should throw on non-2xx, but if it ever
+      // returns a {success:false} envelope, treat that as an error too
+      // instead of silently closing the popup.
+      if (res && res.data && res.data.success === false) {
+        throw new Error(res.data.error || 'Server rejected the response')
+      }
       setResponded(answer)
       try { sounds.tap() } catch {}
       // Fade out after a short pause so the user sees their pick.
@@ -70,6 +90,13 @@ export default function ConfusionResolvedPrompt ({ roomId }) {
     } catch (e) {
       console.error('[ConfusionResolvedPrompt] feedback failed:', e?.message)
       setSubmitting(false)
+      // BUG FIX (PR #35): surface the error so the student is never
+      // stuck. Show a small toast inside the popup with a Retry button
+      // and a Dismiss button. Without this, a 500 used to leave the
+      // popup permanently non-interactive (the only recovery was a
+      // page refresh, which is terrible UX for a student mid-lecture).
+      const msg = e?.message || 'Could not send your response'
+      setErrorMsg(msg)
     }
   }, [prompt, submitting])
 
@@ -117,6 +144,31 @@ export default function ConfusionResolvedPrompt ({ roomId }) {
           ❌ Still Confused
         </button>
       </div>
+      {/* BUG FIX (PR #35): error/retry surface so the student is never
+          permanently stuck. Shows below the buttons when the POST fails.
+          Includes both a Retry button (re-issues the same answer) and a
+          Dismiss button (closes the popup if the student gives up). */}
+      {errorMsg && (
+        <div className="crp-error" role="alert">
+          <span className="crp-error-icon" aria-hidden="true">⚠️</span>
+          <span className="crp-error-text">{errorMsg}</span>
+          <button
+            type="button"
+            className="crp-error-retry"
+            onClick={() => respond(responded || 'understood')}
+            disabled={submitting}
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            className="crp-error-dismiss"
+            onClick={() => { setPrompt(null); setErrorMsg(null) }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   )
 }

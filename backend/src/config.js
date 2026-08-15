@@ -17,6 +17,8 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   googleApiKey: process.env.GOOGLE_API_KEY || '',
+  geminiApiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
   nodeEnv: process.env.NODE_ENV || 'development'
 }
 
@@ -38,7 +40,7 @@ export const AI_PROVIDERS = {
   },
   google: {
     name: 'Gemini',
-    enabled: !!config.googleApiKey,
+    enabled: !!(config.geminiApiKey || config.googleApiKey),
     icon: '🔴'
   }
 }
